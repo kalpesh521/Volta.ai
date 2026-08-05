@@ -28,6 +28,8 @@ class User(Base):
         GUID(), primary_key=True, default=uuid.uuid4
     )
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
+    # Required on password signup; for OAuth we store Google's name (or email local-part fallback).
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

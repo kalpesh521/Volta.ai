@@ -101,7 +101,11 @@ async def test_google_login_creates_new_user(client: AsyncClient):
 
 
 async def test_google_login_links_existing_verified_email_account(client: AsyncClient):
-    signup_payload = {"email": "verifiedlink@example.com", "password": "StrongPass123"}
+    signup_payload = {
+        "name": "Verified Link",
+        "email": "verifiedlink@example.com",
+        "password": "StrongPass123",
+    }
     signup_response = await client.post("/auth/signup", json=signup_payload)
     existing_user_id = signup_response.json()["id"]
 
@@ -129,7 +133,11 @@ async def test_google_login_links_existing_verified_email_account(client: AsyncC
 
 
 async def test_google_login_does_not_autolink_unverified_email(client: AsyncClient):
-    signup_payload = {"email": "unverifiedlink@example.com", "password": "StrongPass123"}
+    signup_payload = {
+        "name": "Unverified Link",
+        "email": "unverifiedlink@example.com",
+        "password": "StrongPass123",
+    }
     await client.post("/auth/signup", json=signup_payload)
 
     _override_google_client(

@@ -59,7 +59,11 @@ class OAuthService:
         existing_user = await self.user_repo.get_by_email(info.email)
 
         if existing_user is None:
-            new_user = await self.user_repo.create(email=info.email, hashed_password=None)
+            # Prefer Google's display name; fall back to the email local-part.
+            display_name = (info.name or "").strip() or info.email.split("@", 1)[0]
+            new_user = await self.user_repo.create(
+                email=info.email, hashed_password=None, name=display_name
+            )
             await self.auth_provider_repo.create(new_user.id, info.provider, info.provider_user_id)
             return await self.token_service.issue_token_pair(new_user.id)
 

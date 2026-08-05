@@ -8,7 +8,7 @@ from app.repositories.user_repository import UserRepository
 
 async def test_password_reset_request_always_returns_204(client: AsyncClient):
     """Same response whether or not the email exists - no user enumeration."""
-    payload = {"email": "known@example.com", "password": "StrongPass123"}
+    payload = {"name": "Known", "email": "known@example.com", "password": "StrongPass123"}
     await client.post("/auth/signup", json=payload)
 
     known_response = await client.post(
@@ -34,7 +34,7 @@ async def test_password_reset_confirm_with_invalid_token_fails(client: AsyncClie
 async def test_password_reset_confirm_allows_login_with_new_password(
     client: AsyncClient, db_session
 ):
-    payload = {"email": "kelly@example.com", "password": "OldPassword123"}
+    payload = {"name": "Kelly", "email": "kelly@example.com", "password": "OldPassword123"}
     await client.post("/auth/signup", json=payload)
 
     # Simulate the token the "emailed" link would contain, using the same
@@ -67,7 +67,7 @@ async def test_password_reset_confirm_allows_login_with_new_password(
 
 
 async def test_password_reset_token_is_single_use(client: AsyncClient, db_session):
-    payload = {"email": "liam@example.com", "password": "OldPassword123"}
+    payload = {"name": "Liam", "email": "liam@example.com", "password": "OldPassword123"}
     await client.post("/auth/signup", json=payload)
 
     from datetime import datetime, timedelta, timezone

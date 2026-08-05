@@ -2,14 +2,15 @@
 FastAPI `Depends` providers.
 
 Wires DB session -> repositories -> services, and extracts/validates the
-current user from the `Authorization: Bearer <access_token>` header. Kept
-in one place so routers stay thin and swapping an implementation (e.g. the
-Google OAuth client, for tests) only requires overriding here.
+current user from the access token. Kept in one place so routers stay thin
+and swapping an implementation (e.g. the Google OAuth client, for tests)
+only requires overriding here.
 """
 import uuid
 
 import jwt
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -25,6 +26,10 @@ from app.services.oauth.base import OAuthProviderClient
 from app.services.oauth.google import GoogleOAuthClient
 from app.services.oauth_service import OAuthService
 from app.services.token_service import TokenService
+
+# Shown as the green Authorize lock in /docs. Swagger reliably sends this.
+# (A plain "authorization" Header parameter is often NOT sent by Swagger UI.)
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 # --- Repositories ---
 
@@ -82,14 +87,56 @@ def get_google_oauth_client() -> OAuthProviderClient:
 # --- Current-user extraction ---
 
 
+def _extract_raw_token(
+    credentials: HTTPAuthorizationCredentials | None,
+    authorization_header: str | None,
+    x_access_token: str | None,
+) -> str | None:
+    """Pull the JWT from any of the supported places (first match wins)."""
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        token = credentials.credentials.strip()
+        if token:
+            return token
+
+    if authorization_header:
+        value = authorization_header.strip()
+        if value.lower().startswith("bearer "):
+            return value.split(" ", 1)[1].strip()
+        if value:
+            return value
+
+    # Swagger reliably sends custom headers; Authorization is often blocked.
+    if x_access_token and x_access_token.strip():
+        return x_access_token.strip()
+
+    return None
+
+
 async def get_current_user(
-    authorization: str | None = Header(default=None),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    x_access_token: str | None = Header(
+        default=None,
+        alias="X-Access-Token",
+        description="Paste access_token here if Authorize/Bearer does not work in Swagger",
+    ),
     user_repo: UserRepository = Depends(get_user_repository),
 ) -> User:
-    if authorization is None or not authorization.lower().startswith("bearer "):
-        raise InvalidTokenError("Missing or malformed Authorization header")
+    """
+    Token sources (any one is enough):
+      1. Authorize lock in /docs  ->  Authorization: Bearer <token>
+      2. Header X-Access-Token: <token>   (works in Swagger Parameters)
+      3. Authorization header (curl/Postman)
+    """
+    # Also read raw header in case Depends/HTTPBearer missed a non-Bearer value.
+    raw_authorization = request.headers.get("authorization")
 
-    raw_token = authorization.split(" ", 1)[1].strip()
+    raw_token = _extract_raw_token(credentials, raw_authorization, x_access_token)
+    if not raw_token:
+        raise InvalidTokenError(
+            "Missing access token. In Swagger: click Authorize (top) and paste "
+            "access_token, OR fill the X-Access-Token header parameter."
+        )
 
     try:
         payload = decode_token(raw_token)

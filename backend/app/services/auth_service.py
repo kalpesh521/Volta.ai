@@ -30,7 +30,9 @@ class AuthService:
             raise EmailAlreadyRegisteredError()
 
         hashed = hash_password(data.password)
-        return await self.user_repo.create(email=data.email, hashed_password=hashed)
+        return await self.user_repo.create(
+            email=data.email, hashed_password=hashed, name=data.name.strip()
+        )
 
     async def login(self, email: str, password: str) -> TokenResponse:
         user = await self.user_repo.get_by_email(email)

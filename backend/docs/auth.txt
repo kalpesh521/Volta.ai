@@ -64,6 +64,7 @@ backend/
 
 users
   id (UUID PK)
+  name (required on password signup; from Google name / email local-part for OAuth)
   email (unique)
   hashed_password (NULLABLE)   <-- NULL = OAuth-only user, no password login
   is_active
@@ -97,7 +98,7 @@ Why auth_providers is separate (interview answer):
 ================================================================================
 
 PASSWORD AUTH
-  POST /auth/signup                  201 UserOut (no password)
+  POST /auth/signup                  201 UserOut (name + email, no password)
   POST /auth/login                   access + refresh tokens (rate limited)
   POST /auth/refresh                 rotate refresh, new pair
   POST /auth/logout                  revoke refresh token (204)
@@ -124,11 +125,11 @@ Frontend note:
 ----------------------------------------
 A) SIGNUP (email + password)
 ----------------------------------------
-1. Router validates UserCreate (email, password min 8)
+1. Router validates UserCreate (name, email, password min 8)
 2. AuthService.signup:
    - if email exists -> 409 email_already_registered
    - hash password with bcrypt
-   - UserRepository.create(email, hashed_password)
+   - UserRepository.create(email, hashed_password, name)
 3. get_db commits
 4. Return 201 UserOut (id, email, is_active, created_at) — never password
 

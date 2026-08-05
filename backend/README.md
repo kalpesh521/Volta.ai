@@ -184,7 +184,7 @@ Postgres in production and SQLite in tests. Google OAuth tests use a fake
 
 | Method | Path                          | Auth        | Notes |
 |--------|-------------------------------|-------------|-------|
-| POST   | `/auth/signup`                | -           | 201 + user (no password) or 409 if email taken |
+| POST   | `/auth/signup`                | -           | 201 + user (`name`, email; no password) or 409 if email taken |
 | POST   | `/auth/login`                 | -           | rate-limited; generic 401 on any failure |
 | POST   | `/auth/refresh`               | -           | rotates refresh token |
 | POST   | `/auth/logout`                | -           | revokes a refresh token |

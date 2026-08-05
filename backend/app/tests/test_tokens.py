@@ -3,9 +3,13 @@ from httpx import AsyncClient
 
 
 async def _signup_and_login(client: AsyncClient, email: str) -> dict:
-    payload = {"email": email, "password": "StrongPass123"}
-    await client.post("/auth/signup", json=payload)
-    response = await client.post("/auth/login", json=payload)
+    await client.post(
+        "/auth/signup",
+        json={"name": "Test User", "email": email, "password": "StrongPass123"},
+    )
+    response = await client.post(
+        "/auth/login", json={"email": email, "password": "StrongPass123"}
+    )
     return response.json()
 
 
