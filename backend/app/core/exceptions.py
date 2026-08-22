@@ -88,6 +88,33 @@ class OAuthAccountLinkingRequiredError(AppError):
         super().__init__(message, details={"link_token": link_token} if link_token else {})
 
 
+class OnboardingNotFoundError(AppError):
+    """Raised when a step that depends on the system record is called before step 1."""
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "onboarding_not_found"
+
+    def __init__(self, message: str = "Onboarding not started. Complete the system step first."):
+        super().__init__(message)
+
+
+class SystemTypeConflictError(AppError):
+    """Raised when battery is sent for On-grid, or grid is sent for Off-grid."""
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    code = "system_type_conflict"
+
+    def __init__(self, message: str = "This step is not applicable for the chosen system type."):
+        super().__init__(message)
+
+
+class OnboardingAlreadyCompleteError(AppError):
+    """Raised on POST /onboarding/complete when already complete."""
+    status_code = status.HTTP_409_CONFLICT
+    code = "onboarding_already_complete"
+
+    def __init__(self, message: str = "Onboarding is already complete."):
+        super().__init__(message)
+
+
 def _error_body(code: str, message: str, details: dict | None = None) -> dict:
     return {"success": False, "error": {"code": code, "message": message, **(details or {})}}
 
