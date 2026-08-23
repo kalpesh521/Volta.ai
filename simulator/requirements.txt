@@ -1,0 +1,10 @@
+# Suryaa telemetry simulator — Python 3.12+
+httpx==0.28.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+tzdata==2025.1
+
+# Tests
+pytest==8.3.4
+pytest-asyncio==0.25.0

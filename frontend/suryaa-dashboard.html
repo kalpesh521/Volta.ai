@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Suryaa — Live Home Energy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #0B1D1C;
+      --surface: #12302C;
+      --surface-2: #17403C;
+      --surface-3: #1D4A45;
+      --sun: #F4A93B;
+      --sun-soft: #FFD98A;
+      --cyan: #4FD3C4;
+      --coral: #FF6B5E;
+      --green: #8FD694;
+      --text: #F2EFE6;
+      --text-dim: #9FB8B3;
+      --border: rgba(242, 239, 230, 0.08);
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { min-height: 100%; }
+    body {
+      background:
+        radial-gradient(circle at 12% -10%, rgba(244, 169, 59, 0.18), transparent 34%),
+        radial-gradient(circle at 90% 0%, rgba(79, 211, 196, 0.12), transparent 28%),
+        var(--ink);
+      color: var(--text);
+      font-family: Inter, sans-serif;
+    }
+    button { font-family: inherit; }
+    .display { font-family: "Space Grotesk", sans-serif; }
+    .mono { font-family: "IBM Plex Mono", monospace; }
+    .wrap { width: min(1280px, calc(100% - 32px)); margin: 0 auto; padding: 22px 0 40px; }
+
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      margin-bottom: 22px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .logo {
+      width: 46px; height: 46px; border-radius: 14px;
+      background: radial-gradient(circle at 30% 30%, var(--sun-soft), var(--sun) 62%);
+      display: grid; place-items: center; box-shadow: 0 8px 24px rgba(244, 169, 59, 0.28);
+    }
+    .brand h1 { font-size: 22px; letter-spacing: -0.03em; }
+    .brand p { color: var(--text-dim); font-size: 13px; }
+    .status-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+    .loc-form { display: flex; gap: 6px; align-items: center; }
+    .loc-form input {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      border-radius: 999px; padding: 7px 12px; width: 180px; outline: none;
+    }
+    .loc-form button {
+      background: var(--sun); color: #1a1200; border: none; border-radius: 999px;
+      padding: 7px 12px; font-weight: 600; cursor: pointer; font-size: 12px;
+    }
+    .loc-form button.gps {
+      background: transparent; color: var(--cyan);
+      border: 1px solid rgba(79, 211, 196, 0.45);
+    }
+    .loc-form button.gps:disabled { opacity: 0.55; cursor: wait; }
+    button.stop {
+      background: transparent; color: var(--coral);
+      border: 1px solid rgba(255, 107, 94, 0.5);
+      border-radius: 999px; padding: 7px 12px; font-weight: 600;
+      cursor: pointer; font-size: 12px;
+    }
+    button.stop:disabled { opacity: 0.55; cursor: default; }
+    .loc-results {
+      position: absolute; right: 0; top: 42px; width: 280px; z-index: 5;
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: var(--shadow); display: none; overflow: hidden;
+    }
+    .loc-results.open { display: block; }
+    .loc-results button {
+      display: block; width: 100%; text-align: left; background: transparent;
+      border: none; color: var(--text); padding: 10px 12px; cursor: pointer; font-size: 13px;
+    }
+    .loc-results button:hover { background: rgba(244, 169, 59, 0.12); }
+    .loc-wrap { position: relative; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(18, 48, 44, 0.86);
+      border: 1px solid var(--border);
+      border-radius: 999px; padding: 7px 12px; font-size: 12px; color: var(--text-dim);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+    .dot.live { background: var(--green); box-shadow: 0 0 0 4px rgba(143, 214, 148, 0.16); }
+    .dot.warn { background: var(--sun); }
+    .dot.bad { background: var(--coral); }
+
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+    .card {
+      background: linear-gradient(180deg, rgba(23, 64, 60, 0.92), rgba(18, 48, 44, 0.96));
+      border: 1px solid var(--border);
+      border-radius: 18px; padding: 16px 18px; box-shadow: var(--shadow);
+    }
+    .card.kpi { min-height: 132px; }
+    .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+    .value { font-size: 34px; line-height: 1.1; margin: 10px 0 6px; letter-spacing: -0.04em; }
+    .sub { font-size: 13px; color: var(--text-dim); }
+    .kpi-solar .value { color: var(--sun-soft); }
+    .kpi-load .value { color: #fff; }
+    .kpi-battery .value { color: var(--cyan); }
+    .kpi-grid .value { color: var(--green); }
+
+    .grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 14px; margin-bottom: 14px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+    h2 { font-size: 16px; margin-bottom: 14px; }
+    .flow {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    }
+    .node {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      padding: 14px; text-align: center;
+    }
+    .node strong { display: block; font-size: 20px; margin: 6px 0 2px; }
+    .node span { color: var(--text-dim); font-size: 12px; }
+    .arrows { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+    .arrow {
+      background: rgba(244, 169, 59, 0.08); border: 1px solid rgba(244, 169, 59, 0.14);
+      border-radius: 12px; padding: 10px 12px; font-size: 13px;
+    }
+    .arrow b { color: var(--sun-soft); }
+
+    canvas { width: 100%; height: 150px; display: block; }
+    .soc-wrap { display: flex; align-items: center; gap: 18px; }
+    .soc-ring { width: 116px; height: 116px; position: relative; flex-shrink: 0; }
+    .soc-ring svg { transform: rotate(-90deg); }
+    .soc-ring .center {
+      position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+    }
+    .soc-ring .center strong { font-size: 22px; display: block; }
+    .meter { height: 8px; background: #0d2624; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+    .meter > i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--sun)); width: 0; }
+
+    .devices { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+    .device {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px;
+    }
+    .device.on { border-color: rgba(244, 169, 59, 0.35); box-shadow: inset 0 0 0 1px rgba(244, 169, 59, 0.08); }
+    .device h3 { font-size: 13px; margin-bottom: 8px; }
+    .pill {
+      display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px;
+      background: #0d2624; color: var(--text-dim);
+    }
+    .pill.on { background: rgba(244, 169, 59, 0.18); color: var(--sun-soft); }
+
+    .weather { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+    .stat { background: var(--surface); border-radius: 12px; padding: 12px; border: 1px solid var(--border); }
+    .stat b { display: block; font-size: 18px; margin-top: 4px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-dim); font-weight: 500; }
+    .waiting {
+      min-height: 180px; display: grid; place-items: center; text-align: center; color: var(--text-dim);
+    }
+    .waiting[hidden],
+    [hidden] { display: none !important; }
+    .waiting code { color: var(--sun-soft); }
+
+    @media (max-width: 1100px) {
+      .kpis, .devices, .weather, .flow { grid-template-columns: repeat(2, 1fr); }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      .topbar { flex-direction: column; align-items: flex-start; }
+      .kpis, .devices, .weather, .flow { grid-template-columns: 1fr; }
+      .value { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="5" fill="#1a1200"/>
+            <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" stroke="#1a1200" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="display">Suryaa Live</h1>
+          <p>Real-time solar home telemetry</p>
+        </div>
+      </div>
+      <div class="status-row">
+        <span class="chip"><i id="liveDot" class="dot"></i><span id="liveLabel">Connecting</span></span>
+        <button type="button" class="stop" id="stopBtn" title="Stop simulator and Open-Meteo API calls">Stop</button>
+        <span class="chip" id="houseChip">home_001</span>
+        <span class="chip" id="locationChip">Pimpri-Chinchwad</span>
+        <span class="chip" id="clockChip">--:--</span>
+        <span class="chip" id="qualityChip">quality —</span>
+        <span class="chip" id="balanceChip">balance —</span>
+        <div class="loc-wrap">
+          <form class="loc-form" id="locForm">
+            <input id="locQuery" type="search" placeholder="Search city…" autocomplete="off">
+            <button type="submit">Set</button>
+            <button type="button" class="gps" id="gpsBtn" title="Use this device's GPS">My location</button>
+          </form>
+          <div class="loc-results" id="locResults"></div>
+        </div>
+      </div>
+    </header>
+
+    <section class="kpis">
+      <article class="card kpi kpi-solar">
+        <div class="label">Solar generation</div>
+        <div class="value display mono" id="solarKw">0.00</div>
+        <div class="sub">Today <span id="solarToday">0.00</span> kWh</div>
+      </article>
+      <article class="card kpi kpi-load">
+        <div class="label">Home load</div>
+        <div class="value display mono" id="loadKw">0.00</div>
+        <div class="sub">Today <span id="loadToday">0.00</span> kWh</div>
+      </article>
+      <article class="card kpi kpi-battery">
+        <div class="label">Battery SOC</div>
+        <div class="value display mono" id="socPct">0.0</div>
+        <div class="sub" id="batteryStatus">idle</div>
+      </article>
+      <article class="card kpi kpi-grid">
+        <div class="label">Grid</div>
+        <div class="value display mono" id="gridKw">0.00</div>
+        <div class="sub" id="gridStatus">waiting</div>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <h2 class="display">Energy flow</h2>
+        <div class="flow">
+          <div class="node"><span>Solar → home</span><strong class="mono" id="fSolarHome">0.00</strong><span>kW</span></div>
+          <div class="node"><span>Solar → battery</span><strong class="mono" id="fSolarBatt">0.00</strong><span>kW</span></div>
+          <div class="node"><span>Battery → home</span><strong class="mono" id="fBattHome">0.00</strong><span>kW</span></div>
+          <div class="node"><span>Grid → home</span><strong class="mono" id="fGridHome">0.00</strong><span>kW</span></div>
+        </div>
+        <div class="arrows">
+          <div class="arrow">Export <b id="fSolarGrid">0.00</b> kW</div>
+          <div class="arrow">Unserved <b id="fUnserved">0.00</b> kW</div>
+          <div class="arrow">Scenario <b id="scenario">—</b></div>
+        </div>
+      </article>
+      <article class="card">
+        <h2 class="display">Battery health</h2>
+        <div class="soc-wrap">
+          <div class="soc-ring">
+            <svg width="116" height="116" viewBox="0 0 116 116">
+              <circle cx="58" cy="58" r="48" fill="none" stroke="#0d2624" stroke-width="10"/>
+              <circle id="socArc" cx="58" cy="58" r="48" fill="none" stroke="#4FD3C4" stroke-width="10" stroke-linecap="round" stroke-dasharray="301.6" stroke-dashoffset="301.6"/>
+            </svg>
+            <div class="center"><strong class="mono" id="socRing">0%</strong><span class="label">SOC</span></div>
+          </div>
+          <div style="flex:1">
+            <div class="label">Charge / discharge</div>
+            <div class="sub" style="margin:8px 0">Charge <b class="mono" id="chargeKw">0.00</b> kW · Discharge <b class="mono" id="dischargeKw">0.00</b> kW</div>
+            <div class="meter"><i id="socBar"></i></div>
+            <div class="sub" style="margin-top:10px">Available <b class="mono" id="battAvail">0.00</b> kWh · SOH <b class="mono" id="soh">—</b>%</div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid-3">
+      <article class="card">
+        <h2 class="display">Solar vs load</h2>
+        <canvas id="powerChart" width="640" height="180"></canvas>
+      </article>
+      <article class="card">
+        <h2 class="display">Battery SOC</h2>
+        <canvas id="socChart" width="640" height="180"></canvas>
+      </article>
+      <article class="card">
+        <h2 class="display">Weather</h2>
+        <div class="weather" style="grid-template-columns:1fr 1fr">
+          <div class="stat"><span class="label">Temp</span><b class="mono" id="wTemp">—</b></div>
+          <div class="stat"><span class="label">Clouds</span><b class="mono" id="wCloud">—</b></div>
+          <div class="stat"><span class="label">GHI</span><b class="mono" id="wGhi">—</b></div>
+          <div class="stat"><span class="label">Rain</span><b class="mono" id="wRain">—</b></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="card" style="margin-bottom:14px">
+      <h2 class="display">Devices</h2>
+      <div class="devices" id="deviceGrid"></div>
+    </section>
+
+    <section class="card">
+      <h2 class="display">Live readings</h2>
+      <div id="emptyState" class="waiting">
+        <div>
+          <p>Waiting for live simulator data.</p>
+          <p style="margin-top:8px">From the repo root run:</p>
+          <p style="margin-top:10px"><code>python -m simulator.main --dashboard --weather-mode live</code></p>
+        </div>
+      </div>
+      <div id="tableWrap" hidden>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Solar</th>
+              <th>Load</th>
+              <th>SOC</th>
+              <th>Import</th>
+              <th>Export</th>
+              <th>Balance</th>
+            </tr>
+          </thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      history: [],
+      lastStamp: "",
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    function num(value, digits = 2) {
+      const n = Number(value || 0);
+      return n.toFixed(digits);
+    }
+
+    function fmtTime(ts) {
+      try {
+        return new Date(ts).toLocaleTimeString("en-IN", {
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+      } catch {
+        return ts || "—";
+      }
+    }
+
+    function setLive(ok, label) {
+      const stopped = label === "Stopped" || label === "Stopping";
+      $("liveDot").className = "dot " + (ok ? "live" : stopped ? "bad" : "warn");
+      $("liveLabel").textContent = label;
+    }
+
+    function drawSeries(canvas, series, color, minHint = 0, maxHint = 1) {
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      if (!series.length) return;
+      const min = Math.min(minHint, ...series);
+      const max = Math.max(maxHint, ...series);
+      const span = max - min || 1;
+      ctx.beginPath();
+      series.forEach((value, i) => {
+        const x = (i / Math.max(series.length - 1, 1)) * (w - 16) + 8;
+        const y = h - 12 - ((value - min) / span) * (h - 24);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.4;
+      ctx.stroke();
+    }
+
+    function renderDevices(devices) {
+      const grid = $("deviceGrid");
+      if (!devices || !devices.length) {
+        grid.innerHTML = '<div class="sub">No device readings yet.</div>';
+        return;
+      }
+      grid.innerHTML = devices.map((device) => {
+        const on = device.current_state === "on";
+        return `
+          <div class="device ${on ? "on" : ""}">
+            <h3>${device.device_name}</h3>
+            <span class="pill ${on ? "on" : ""}">${on ? "ON" : "OFF"}</span>
+            <div class="sub" style="margin-top:8px">${num(device.current_power_kw)} kW</div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function applyTelemetry(row) {
+      if (!row || row.timestamp === state.lastStamp) return;
+      state.lastStamp = row.timestamp;
+      state.history.push(row);
+      if (state.history.length > 60) state.history.shift();
+
+      $("emptyState").hidden = true;
+      $("tableWrap").hidden = false;
+      $("houseChip").textContent = row.household_id || "home_001";
+      const loc = row.location || {};
+      $("locationChip").textContent = locationLabel(loc);
+      $("clockChip").textContent = fmtTime(row.timestamp);
+      $("qualityChip").textContent = "quality " + (row.data_quality || "—");
+      $("balanceChip").textContent = "balance " + (row.energy_balance_status || "—");
+      $("balanceChip").style.color = row.energy_balance_valid === false ? "var(--coral)" : "var(--text-dim)";
+
+      $("solarKw").textContent = num(row.solar_power_kw);
+      $("solarToday").textContent = num(row.solar_energy_today_kwh);
+      $("loadKw").textContent = num(row.home_load_power_kw);
+      $("loadToday").textContent = num(row.home_consumption_today_kwh);
+      $("socPct").textContent = num(row.battery_soc_percent, 1) + "%";
+      $("batteryStatus").textContent = row.battery_status || "—";
+
+      const exportKw = Number(row.grid_export_power_kw || 0);
+      const importKw = Number(row.grid_import_power_kw || 0);
+      $("gridKw").textContent = num(exportKw > 0 ? exportKw : importKw);
+      $("gridStatus").textContent = (row.grid_status || "—") + (exportKw > 0 ? " · exporting" : importKw > 0 ? " · importing" : " · idle");
+
+      $("fSolarHome").textContent = num(row.solar_to_home_kw);
+      $("fSolarBatt").textContent = num(row.solar_to_battery_kw);
+      $("fBattHome").textContent = num(row.battery_to_home_kw);
+      $("fGridHome").textContent = num(row.grid_to_home_kw);
+      $("fSolarGrid").textContent = num(row.solar_to_grid_kw);
+      $("fUnserved").textContent = num(row.unserved_load_kw);
+      $("scenario").textContent = row.scenario || "normal_day";
+
+      const soc = Math.max(0, Math.min(100, Number(row.battery_soc_percent || 0)));
+      $("socRing").textContent = soc.toFixed(0) + "%";
+      $("socArc").style.strokeDashoffset = String(301.6 * (1 - soc / 100));
+      $("socBar").style.width = soc + "%";
+      $("chargeKw").textContent = num(row.battery_charge_power_kw);
+      $("dischargeKw").textContent = num(row.battery_discharge_power_kw);
+      $("battAvail").textContent = num(row.battery_energy_available_kwh);
+      $("soh").textContent = num(row.battery_soh_percent, 1);
+
+      const weather = row.weather || {};
+      $("wTemp").textContent = num(weather.temperature_c, 1) + " °C";
+      $("wCloud").textContent = num(weather.cloud_cover_percent, 0) + " %";
+      $("wGhi").textContent = num(weather.shortwave_radiation_wm2, 0) + " W/m²";
+      $("wRain").textContent = num(weather.precipitation_mm, 1) + " mm";
+
+      renderDevices(row.devices || []);
+      drawSeries($("powerChart"), state.history.map((item) => Number(item.solar_power_kw || 0)), "#F4A93B", 0, 5);
+      drawSeries($("socChart"), state.history.map((item) => Number(item.battery_soc_percent || 0)), "#4FD3C4", 20, 100);
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="mono">${fmtTime(row.timestamp)}</td>
+        <td class="mono">${num(row.solar_power_kw)}</td>
+        <td class="mono">${num(row.home_load_power_kw)}</td>
+        <td class="mono">${num(row.battery_soc_percent, 1)}</td>
+        <td class="mono">${num(row.grid_import_power_kw)}</td>
+        <td class="mono">${num(row.grid_export_power_kw)}</td>
+        <td>${row.energy_balance_status || "—"}</td>
+      `;
+      $("logBody").prepend(tr);
+      while ($("logBody").children.length > 12) $("logBody").lastChild.remove();
+    }
+
+    async function loadHistory() {
+      try {
+        const response = await fetch("/api/history?limit=40");
+        if (!response.ok) return;
+        const payload = await response.json();
+        (payload.records || []).forEach(applyTelemetry);
+      } catch {
+        /* first paint can happen before the server is ready */
+      }
+    }
+
+    let liveSource = null;
+    let stopped = false;
+    let pollTimer = 0;
+
+    function connectLive() {
+      if (stopped) return;
+      if (!window.EventSource) {
+        pollLatest();
+        return;
+      }
+      const source = new EventSource("/api/stream");
+      liveSource = source;
+      source.onopen = () => {
+        if (!stopped) setLive(true, "Live");
+      };
+      source.onmessage = (event) => {
+        if (stopped) return;
+        setLive(true, "Live");
+        applyTelemetry(JSON.parse(event.data));
+      };
+      source.onerror = () => {
+        source.close();
+        if (liveSource === source) liveSource = null;
+        if (stopped) return;
+        setLive(false, "Reconnecting");
+        setTimeout(connectLive, 1500);
+      };
+    }
+
+    async function pollLatest() {
+      if (stopped) return;
+      try {
+        const response = await fetch("/api/latest");
+        const payload = await response.json();
+        if (payload.record) {
+          setLive(true, "Polling");
+          applyTelemetry(payload.record);
+        }
+      } catch {
+        if (!stopped) setLive(false, "Waiting");
+      }
+      if (!stopped) pollTimer = window.setTimeout(pollLatest, 1000);
+    }
+
+    async function stopSimulator() {
+      if (stopped) return;
+      stopped = true;
+      $("stopBtn").disabled = true;
+      $("gpsBtn").disabled = true;
+      $("locQuery").disabled = true;
+      if (liveSource) {
+        liveSource.close();
+        liveSource = null;
+      }
+      if (pollTimer) window.clearTimeout(pollTimer);
+      setLive(false, "Stopping");
+      try {
+        await fetch("/api/stop", { method: "POST" });
+      } catch {
+        /* server may close the connection before the response arrives */
+      }
+      setLive(false, "Stopped");
+    }
+
+    async function searchPlaces(query) {
+      const box = $("locResults");
+      box.classList.remove("open");
+      box.innerHTML = "";
+      if (!query || query.trim().length < 2) return;
+      const response = await fetch("/api/geocode?q=" + encodeURIComponent(query.trim()));
+      const payload = await response.json();
+      const results = payload.results || [];
+      if (!results.length) {
+        box.innerHTML = "<button type='button'>No matches</button>";
+        box.classList.add("open");
+        return;
+      }
+      results.forEach((place) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        const bits = [place.name, place.admin1, place.country].filter(Boolean);
+        btn.textContent = bits.join(", ");
+        btn.addEventListener("click", () => applyPlace(place));
+        box.appendChild(btn);
+      });
+      box.classList.add("open");
+    }
+
+    function locationLabel(loc) {
+      if (!loc || !loc.name) return "location —";
+      if (loc.source === "browser-gps") {
+        const lat = Number(loc.latitude);
+        const lon = Number(loc.longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lon)) {
+          return "GPS · " + lat.toFixed(2) + ", " + lon.toFixed(2);
+        }
+        return "Current location";
+      }
+      return loc.admin1 && loc.admin1 !== loc.name ? loc.name + ", " + loc.admin1 : loc.name;
+    }
+
+    async function applyPlace(place) {
+      $("locResults").classList.remove("open");
+      $("locationChip").textContent = "Updating…";
+      const response = await fetch("/api/location", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(place),
+      });
+      const payload = await response.json();
+      if (payload.location) {
+        $("locationChip").textContent = locationLabel(payload.location);
+      }
+    }
+
+    let gpsPending = false;
+
+    function requestGps(options) {
+      const silent = Boolean(options && options.silent);
+      if (stopped || gpsPending) return;
+      if (!navigator.geolocation) {
+        if (!silent) $("locationChip").textContent = "GPS not supported";
+        return;
+      }
+      gpsPending = true;
+      $("gpsBtn").disabled = true;
+      if (!silent) $("locationChip").textContent = "Locating…";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          gpsPending = false;
+          $("gpsBtn").disabled = false;
+          applyPlace({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            source: "browser-gps",
+          });
+        },
+        (err) => {
+          gpsPending = false;
+          $("gpsBtn").disabled = false;
+          if (silent) return;
+          if (err && err.code === 1) $("locationChip").textContent = "GPS denied — search a city";
+          else $("locationChip").textContent = "GPS unavailable — search a city";
+        },
+        { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 }
+      );
+    }
+
+    $("locForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      searchPlaces($("locQuery").value);
+    });
+    $("gpsBtn").addEventListener("click", () => requestGps());
+    $("stopBtn").addEventListener("click", stopSimulator);
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest(".loc-wrap")) $("locResults").classList.remove("open");
+    });
+
+    requestGps({ silent: true });
+    loadHistory().then(connectLive);
+  </script>
+</body>
+</html>

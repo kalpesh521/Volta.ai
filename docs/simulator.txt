@@ -1,0 +1,420 @@
+================================================================================
+SURYAA TELEMETRY SIMULATOR - INTERVIEW QUICK REVISION
+================================================================================
+Project: Standalone solar-home telemetry generator for Suryaa (Volta.ai)
+Stack: Python 3.10+ (3.12 recommended) | Pydantic v2 | pydantic-settings
+         httpx | stdlib HTTP + SSE (no FastAPI) | pytest + pytest-asyncio
+
+What it is NOT: Redis, Postgres, FastAPI, Docker, LangChain, or the main
+backend API. It sits next to backend/ and frontend/ as its own package.
+
+Run from the REPOSITORY ROOT (not from inside simulator/):
+
+  source simulator/.venv/bin/activate
+  python -m simulator.main --dashboard --weather-mode live
+
+================================================================================
+1. MEMORY MAP - FOLDER / LAYER PURPOSE
+================================================================================
+
+Tick flow (ALWAYS say this in interviews):
+
+  CLI / dashboard
+       -->  TelemetryGenerator.step()     (compose one reading)
+            --> WeatherClient             (Open-Meteo or fallback)
+            --> SolarGenerator            (PV kW from GHI / night = 0)
+            --> LoadGenerator + DeviceEngine
+            --> energy_balance.dispatch   (priority: solar → batt → grid)
+            --> BatteryEngine / GridEngine
+            --> validate_energy_balance   (never stops the generator)
+       --> stdout JSONL + live_bus SSE + dashboard HTML
+
+  config.py   = env + device catalog + scenarios
+  models.py   = Pydantic records (extra="allow" so fields can grow)
+  engines     = one concern each (solar, load, battery, grid, devices)
+  dashboard   = stdlib HTTP server, not FastAPI
+
+--------------------------------------------------------------------------------
+volta.ai/
+  backend/                      FastAPI auth / onboarding (separate)
+  frontend/
+    suryaa-dashboard.html       Live UI (dark teal / sun-gold)
+  simulator/                    THIS PACKAGE
+    main.py                     CLI + live clock loop
+    __main__.py                 python -m simulator
+    config.py                   SimulatorConfig + DEFAULT_DEVICE_CATALOG
+    models.py                   Weather / Location / Device / Telemetry
+    weather_client.py           Open-Meteo fetch + cache + fallback profile
+    geocoding_client.py         City search + GPS coords → timezone
+    solar_generator.py          PV from GHI, cloud, rain, inverter clip
+    load_generator.py           Base load + occupancy + appliances
+    device_engine.py            Catalog schedules (cyclic / windows / AC)
+    battery_engine.py           SOC persist; charge/discharge as separate kW
+    grid_engine.py              Import/export, outage window, zero-export
+    energy_balance.py           Dispatch order + AC-bus check
+    telemetry_generator.py      One tick = all engines → TelemetryRecord
+    live_bus.py                 Thread-safe latest + history for SSE
+    location_state.py           Current home + stop flag + HTTP server hook
+    dashboard_server.py         Serves HTML + /api/* + Stop shutdown
+    data/telemetry.jsonl        Append-only output
+    tests/test_simulator.py     18 tests
+    .env.example                Optional overrides
+
+================================================================================
+2. WHAT WE BUILT (FEATURE LIST)
+================================================================================
+
+CORE GENERATOR
+  - Real-time solar home: weather, PV, load, battery, grid, devices
+  - One JSON object per interval on stdout + JSONL file
+  - Seeded randomness (RANDOM_SEED) so runs are repeatable
+  - Scenarios without rewriting engines
+  - Energy balance warning never kills the loop
+
+WEATHER
+  - Open-Meteo forecast (no API key, CC BY 4.0)
+  - Fetch at startup + every WEATHER_REFRESH_MINUTES (default 30)
+    — NOT on every telemetry tick (rate-limit friendly)
+  - Modes: live | fallback | historical-style
+  - API failure → cached hour, else deterministic Pune-climate fallback
+
+LOCATION (keep BOTH)
+  1. City search — Open-Meteo Geocoding (CLI --location, dashboard search)
+  2. Browser GPS — navigator.geolocation → POST coords; timezone=auto
+  Default home: Pimpri-Chinchwad, lat 18.6298, lon 73.7997, Asia/Kolkata
+
+LIVE DASHBOARD
+  - --dashboard serves frontend/suryaa-dashboard.html at http://127.0.0.1:8765
+  - SSE /api/stream; defaults to live clock, 1 reading per real second
+  - Search city, My location, Stop (kills process = Ctrl+C from the UI)
+
+================================================================================
+3. RECORDS (NO DATABASE)
+================================================================================
+
+There is no Postgres. State is in-memory engines + append-only JSONL.
+
+WeatherRecord
+  temperature_c, humidity, cloud_cover, precipitation, wind,
+  shortwave/direct/diffuse radiation (W/m²), weather_code,
+  sunrise, sunset, source, data_quality
+
+LocationRecord
+  name, lat, lon, timezone, country, elevation, source
+  (open-meteo-geocoding | browser-gps | config | fallback)
+
+DeviceReading
+  device_id, name, type, rated_power_kw, current_state, current_power_kw,
+  energy_interval_kwh, critical, controllable
+
+EnergyFlows
+  solar_to_home / solar_to_battery / solar_to_grid
+  battery_to_home / grid_to_home / unserved_load
+  solar_curtailed_kw
+  grid_to_battery_kw   <-- reserved, always 0 (no grid charging by default)
+
+TelemetryRecord  (plus extra="allow" keys)
+  timestamp, household_id, data_source="simulator", data_quality
+  solar_power_kw + energy today/total/interval
+  home_load_power_kw + consumption today/total/interval
+  battery_soc / soh / charge_kw / discharge_kw / status
+  grid_status / import / export / totals
+  flow fields + energy_balance_status / error / valid
+  devices[], weather{}, location{}
+
+Interview line:
+  "Charge and discharge are separate non-negative kW fields.
+   Never infer direction from the sign of one battery_power value."
+
+================================================================================
+4. CLI + DASHBOARD APIS
+================================================================================
+
+CLI (python -m simulator.main)
+
+  --weather-mode live|fallback|historical-style
+  --dashboard [--dashboard-host 127.0.0.1] [--dashboard-port 8765]
+  --interval-seconds   default 60; dashboard forces 1 unless overridden
+  --speed              wall-clock multiplier; 0 = as fast as possible
+  --start-time         ISO-8601; if omitted, live clock (datetime.now)
+  --ticks N            stop after N readings (0 = until Ctrl+C / Stop)
+  --scenario           see section 6
+  --location "Pune, India"   Open-Meteo geocode on start
+  --country-code IN
+  --no-geocode         keep .env LATITUDE/LONGITUDE
+  --pretty / --quiet
+  --solar-capacity-kwp / --battery-capacity-kwh / --household-id
+
+Dashboard HTTP (stdlib, not FastAPI)
+
+  GET  /                         suryaa-dashboard.html
+  GET  /api/latest               last TelemetryRecord
+  GET  /api/history?limit=120    ring buffer
+  GET  /api/stream               SSE
+  GET  /api/geocode?q=           city search
+  GET  /api/location             current LocationRecord
+  POST /api/location             set city object OR GPS {lat, lon, source}
+  POST /api/stop                 local-only; close SSE, exit process
+                                 (stops Open-Meteo calls without finding the terminal)
+
+Always open via http://127.0.0.1:8765 — never file://
+(GPS and SSE need a secure / localhost origin).
+
+================================================================================
+5. CODE WORKFLOWS (STEP BY STEP)
+================================================================================
+
+----------------------------------------
+A) ONE TELEMETRY TICK
+----------------------------------------
+1. Convert timestamp to household timezone
+2. WeatherClient.get_weather (cache lookup or fallback)
+3. SolarGenerator.compute_power_kw  (0 at night)
+4. LoadGenerator.generate = base load + DeviceEngine.step
+5. grid_is_available (GRID_AVAILABLE + optional GRID_OUTAGE_WINDOW)
+6. dispatch_energy (priority list below)
+7. Actual solar = solar_to_home + solar_to_battery + solar_to_grid
+   Served load  = solar_to_home + battery_to_home + grid_to_home
+8. Accumulators: solar kWh, load kWh, battery SOC, grid import/export
+9. validate_energy_balance — warning only, loop continues
+10. Publish JSONL + live_bus; dashboard SSE clients see it
+
+----------------------------------------
+B) LIVE CLOCK vs SIMULATED TIME
+----------------------------------------
+--dashboard with no --start-time:
+  each tick uses datetime.now(tz) and sleeps until the next whole second
+  (so clocks show 22:04:01, 22:04:02, …)
+
+Do NOT pass --speed 60 for live viewing — that jumps simulated time
+by one minute per tick.
+
+--start-time present:
+  simulated clock advances by interval_seconds; speed controls wall sleep
+
+----------------------------------------
+C) OPEN-METEO WEATHER
+----------------------------------------
+1. GET api.open-meteo.com/v1/forecast
+   lat, lon, timezone, hourly fields, daily=sunrise,sunset
+2. Cache hourly rows; interpolate between hour0 and hour1
+3. Refresh every weather_refresh_minutes OR if the hour is missing
+4. On HTTP failure: reuse cache; if empty, fallback_weather()
+5. overlay_scenario() then applies cloudy_day / rainy_day / sensor_failure
+
+----------------------------------------
+D) CITY SEARCH (OPTION 1)
+----------------------------------------
+CLI: --location "Pune, India" or GEOCODE_ON_START + LOCATION_NAME
+Dashboard: type city → GET /api/geocode → pick result → POST /api/location
+
+Open-Meteo Geocoding /v1/search (no key).
+First match → lat, lon, timezone, elevation.
+TelemetryGenerator.apply_location recreates WeatherClient and warmups.
+
+Failure: keep Pimpri-Chinchwad / .env coords; data_quality=fallback.
+
+----------------------------------------
+E) BROWSER GPS (OPTION 2)
+----------------------------------------
+1. Dashboard on load (and My location) calls getCurrentPosition
+2. POST { latitude, longitude, source: "browser-gps" }
+3. Server: Open-Meteo forecast timezone=auto → timezone + elevation
+4. No reverse city name (Open-Meteo has none) → chip "GPS · lat, lon"
+5. Permission denied → city search still works
+
+Keep both options: GPS = I'm here; search = simulate another home
+(or VPN / denied permission).
+
+----------------------------------------
+F) STOP BUTTON
+----------------------------------------
+1. Frontend closes EventSource (no reconnect)
+2. POST /api/stop (127.0.0.1 / ::1 only)
+3. live_bus.close() wakes SSE waiters; HTTP server shutdown
+4. Main loop sees stop_requested; SIGINT exits the process
+5. Open-Meteo calls stop even if you cannot find the terminal
+
+Restart: run python -m simulator.main --dashboard again.
+
+================================================================================
+6. ENERGY + SOLAR RULES
+================================================================================
+
+Dispatch priority:
+  1. Solar → home
+  2. Solar surplus → battery
+  3. Remaining surplus → grid (0 if zero_export_mode)
+  4. Battery → home
+  5. Grid → home
+  6. Unserved load if grid down and battery at min SOC
+
+Solar:
+  solar_power_kw =
+      capacity_kwp
+    × (GHI_wm2 / 1000)          # clip 0–1.2
+    × efficiency (0.82)
+    × shading (0.95)
+    × temperature_factor        # derate above 25 °C
+    × cloud_factor / rain_factor  # ONLY if GHI was synthesized (clear-sky sine)
+    × small seeded noise
+  Night (before sunrise / after sunset) = 0
+  Never exceed inverter_capacity_kw
+  Measured Open-Meteo GHI already includes clouds/rain — do not derate twice
+  If GHI missing in daylight → sine curve, then apply cloud/rain
+  sensor_failure (degraded + GHI 0) → solar 0 (no sine fallback)
+
+AC-bus check (tolerance 0.05 kW):
+  solar + grid_import + battery_discharge
+      ≈ home + grid_export + battery_charge
+  Fail → energy_balance_status="warning", warnings[] filled, keep running
+
+Battery:
+  SOC persists between ticks
+  Charge and discharge never in the same interval
+  SOC tank = battery_usable_capacity_kwh (capped by nameplate)
+  Clamp: min SOC (default 20%) … 100%
+  Default: cannot charge from grid
+  Grid import and export are never both > 0 in the same interval
+
+Default devices:
+  Refrigerator (cyclic, critical)
+  Washing machine (morning window, every other day)
+  Water heater (morning + evening windows)
+  Air conditioner (hot OR afternoon/evening windows)
+  Water pump (short morning window)
+
+Scenarios:
+  normal_day
+  cloudy_day / rainy_day     weather overlay
+  battery_low / battery_full initial SOC
+  grid_outage                GRID_AVAILABLE=false
+  high_evening_load          evening base × 1.85 + AC on
+  sensor_failure             GHI zeroed, data_quality=degraded
+
+================================================================================
+7. SECURITY / OPS NOTES (LOCAL TOOL, NOT AUTH)
+================================================================================
+
+[ ] No passwords, JWT, or user DB — this is a generator, not an API product
+[ ] Dashboard binds 127.0.0.1 by default
+[ ] POST /api/stop is local-only (127.0.0.1 / ::1)
+[ ] Open-Meteo: no key; ~10k calls/day — cache 30 min, Stop to halt calls
+[ ] Attribution required (CC BY 4.0 / GeoNames)
+[ ] .env optional; secrets are not required for weather
+[ ] extra="allow" on records so old JSONL stays readable after new keys
+[ ] Never open the HTML as file:// (GPS + SSE break)
+
+================================================================================
+8. CONFIG (NO CODE CHANGE TO TUNE A HOME)
+================================================================================
+
+.env (copy from .env.example) OR CLI flags. Extra env keys are ignored.
+
+  HOUSEHOLD_ID, TIMEZONE, LATITUDE, LONGITUDE, LOCATION_NAME
+  GEOCODE_ON_START, LOCATION_COUNTRY_CODE
+  SOLAR_CAPACITY_KWP, INVERTER_CAPACITY_KW, SOLAR_EFFICIENCY, SHADING_FACTOR
+  BATTERY_CAPACITY_KWH, INITIAL_BATTERY_SOC_PERCENT, BATTERY_MINIMUM_SOC_PERCENT
+  GRID_AVAILABLE, ZERO_EXPORT_MODE, GRID_OUTAGE_WINDOW=14:00-16:00
+  WEATHER_MODE, WEATHER_REFRESH_MINUTES, SCENARIO, RANDOM_SEED
+  DEVICE_CATALOG_JSON   override the five default appliances
+
+Note: BATTERY_USABLE_CAPACITY_KWH is stored / CLI-set (80% of nameplate)
+but SOC math currently uses battery_capacity_kwh (nameplate).
+
+Switch live weather off without code change:
+  WEATHER_MODE=fallback   or   --weather-mode fallback
+
+================================================================================
+9. TESTING STRATEGY
+================================================================================
+
+  cd repo root
+  source simulator/.venv/bin/activate
+  pytest simulator/tests
+
+18 tests. Coverage includes:
+  - night solar = 0
+  - cloud and rain derate PV
+  - inverter clip
+  - SOC never below min / never above 100%
+  - grid import 0 on outage
+  - zero-export clips export
+  - energy balance within 0.05 kW
+  - Open-Meteo failure → fallback
+  - devices add to home load
+  - random seed repeatability
+  - geocode parse + API failure keeps default coords
+  - GPS timezone=auto parse + forecast failure keeps lat/lon
+  - live_bus.close() drops publish and waiters
+
+No real network required for the suite (httpx calls monkeypatched).
+
+================================================================================
+10. TRADE-OFFS (EXPECT THESE QUESTIONS)
+================================================================================
+
+Q: Why no FastAPI / Redis / Postgres in the simulator?
+A: It is a data generator. Stdlib HTTP + SSE is enough for a local dashboard.
+   The real product API stays in backend/.
+
+Q: Why not call Open-Meteo every second?
+A: Free tier ~10k/day. Weather is hourly; we cache and refresh every 30 min.
+   Live ticks only interpolate the cached hour.
+
+Q: Why keep city search AND GPS?
+A: GPS = current device. Search = another city, CLI, permission denied, VPN.
+   GPS-only would block "I'm in Goa, simulate a Pune home."
+
+Q: Why no reverse-geocoded city name on GPS?
+A: Open-Meteo has no reverse endpoint. We take timezone=auto and show coords.
+
+Q: Why energy-balance failure does not stop the process?
+A: A simulator that dies on a 0.06 kW rounding error is useless for demos.
+   We flag warning and keep streaming.
+
+Q: Why charge_kw and discharge_kw instead of signed battery power?
+A: Signed power is ambiguous at 0 and easy to misuse in UI/agents.
+   Two non-negative fields match how inverters report.
+
+Q: Why --dashboard quiets stdout?
+A: One JSON line per second floods the terminal; SSE is the live channel.
+   Use --pretty if you still want JSON printed.
+
+================================================================================
+11. ONE-MINUTE ELEVATOR PITCH (MEMORIZE)
+================================================================================
+
+"I built a standalone Suryaa solar-home telemetry simulator next to the
+FastAPI backend. Each tick composes weather, PV, household load, battery,
+and grid into one JSON record with an energy-balance check that never
+stops the loop. Live weather comes from Open-Meteo and is cached for
+30 minutes; night solar is zero; charge and discharge are separate kW
+fields. Location can be a geocoded city or browser GPS. A small stdlib
+HTTP dashboard streams SSE at the real clock so you can watch the home
+live, search a city, use My location, and Stop the process to halt API
+calls without finding the terminal."
+
+================================================================================
+12. CHEAT SHEET - KEY FILES TO OPEN IF ASKED TO WALK CODE
+================================================================================
+
+Architecture / CLI:     simulator/main.py
+Config + devices:       simulator/config.py
+Records:                simulator/models.py
+Compose one tick:       simulator/telemetry_generator.py
+Dispatch + balance:     simulator/energy_balance.py
+Weather + fallback:     simulator/weather_client.py
+City + GPS location:    simulator/geocoding_client.py
+PV rules:               simulator/solar_generator.py
+Appliances:             simulator/device_engine.py
+SOC engine:             simulator/battery_engine.py
+Import/export:          simulator/grid_engine.py
+SSE bus:                simulator/live_bus.py
+Dashboard + Stop:       simulator/dashboard_server.py
+Live UI:                frontend/suryaa-dashboard.html
+How to run:             simulator/README.md
+
+================================================================================
+END OF SIMULATOR REVISION NOTES
+================================================================================
