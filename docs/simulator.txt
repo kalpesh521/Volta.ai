@@ -38,24 +38,25 @@ Tick flow (ALWAYS say this in interviews):
 volta.ai/
   backend/                      FastAPI auth / onboarding (separate)
   frontend/
-    suryaa-dashboard.html       Live UI (dark teal / sun-gold)
+    public/
+      suryaa-dashboard.html     Live UI (dark teal / sun-gold)
   simulator/                    THIS PACKAGE
     main.py                     CLI + live clock loop
     __main__.py                 python -m simulator
     config.py                   SimulatorConfig + DEFAULT_DEVICE_CATALOG
     models.py                   Weather / Location / Device / Telemetry
-    weather_client.py           Open-Meteo fetch + cache + fallback profile
-    geocoding_client.py         City search + GPS coords → timezone
-    solar_generator.py          PV from GHI, cloud, rain, inverter clip
-    load_generator.py           Base load + occupancy + appliances
-    device_engine.py            Catalog schedules (cyclic / windows / AC)
-    battery_engine.py           SOC persist; charge/discharge as separate kW
-    grid_engine.py              Import/export, outage window, zero-export
-    energy_balance.py           Dispatch order + AC-bus check
+    clients/weather.py          Open-Meteo fetch + cache + fallback profile
+    clients/geocoding.py        City search + GPS coords → timezone
+    engines/solar.py            PV from GHI, cloud, rain, inverter clip
+    engines/load.py             Base load + occupancy + appliances
+    engines/device.py           Catalog schedules (cyclic / windows / AC)
+    engines/battery.py          SOC persist; charge/discharge as separate kW
+    engines/grid.py             Import/export, outage window, zero-export
+    engines/energy_balance.py   Dispatch order + AC-bus check
     telemetry_generator.py      One tick = all engines → TelemetryRecord
-    live_bus.py                 Thread-safe latest + history for SSE
-    location_state.py           Current home + stop flag + HTTP server hook
-    dashboard_server.py         Serves HTML + /api/* + Stop shutdown
+    dashboard/live_bus.py       Thread-safe latest + history for SSE
+    dashboard/location_state.py Current home + stop flag + HTTP server hook
+    dashboard/server.py         Serves HTML + /api/* + Stop shutdown
     data/telemetry.jsonl        Append-only output
     tests/test_simulator.py     18 tests
     .env.example                Optional overrides
@@ -84,7 +85,7 @@ LOCATION (keep BOTH)
   Default home: Pimpri-Chinchwad, lat 18.6298, lon 73.7997, Asia/Kolkata
 
 LIVE DASHBOARD
-  - --dashboard serves frontend/suryaa-dashboard.html at http://127.0.0.1:8765
+  - --dashboard serves frontend/public/suryaa-dashboard.html at http://127.0.0.1:8765
   - SSE /api/stream; defaults to live clock, 1 reading per real second
   - Search city, My location, Stop (kills process = Ctrl+C from the UI)
 
@@ -403,16 +404,16 @@ Architecture / CLI:     simulator/main.py
 Config + devices:       simulator/config.py
 Records:                simulator/models.py
 Compose one tick:       simulator/telemetry_generator.py
-Dispatch + balance:     simulator/energy_balance.py
-Weather + fallback:     simulator/weather_client.py
-City + GPS location:    simulator/geocoding_client.py
-PV rules:               simulator/solar_generator.py
-Appliances:             simulator/device_engine.py
-SOC engine:             simulator/battery_engine.py
-Import/export:          simulator/grid_engine.py
-SSE bus:                simulator/live_bus.py
-Dashboard + Stop:       simulator/dashboard_server.py
-Live UI:                frontend/suryaa-dashboard.html
+Dispatch + balance:     simulator/engines/energy_balance.py
+Weather + fallback:     simulator/clients/weather.py
+City + GPS location:    simulator/clients/geocoding.py
+PV rules:               simulator/engines/solar.py
+Appliances:             simulator/engines/device.py
+SOC engine:             simulator/engines/battery.py
+Import/export:          simulator/engines/grid.py
+SSE bus:                simulator/dashboard/live_bus.py
+Dashboard + Stop:       simulator/dashboard/server.py
+Live UI:                frontend/public/suryaa-dashboard.html
 How to run:             simulator/README.md
 
 ================================================================================

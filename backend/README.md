@@ -16,22 +16,23 @@ PostgreSQL, and JWT-based auth (password + Google OAuth2/OIDC).
 ## Project layout
 
 ```
-app/
-  core/         # config, db session, security primitives, DI (deps.py), exceptions, rate limiting
-  models/       # SQLAlchemy ORM models (User, RefreshToken, AuthProvider, PasswordResetToken)
-  schemas/      # Pydantic request/response models
-  repositories/ # DB access only, no business rules
-  services/     # business logic (auth, tokens, oauth linking policy)
-    oauth/      # provider-agnostic OAuth interface + Google implementation
-  routers/      # FastAPI endpoints (thin - delegate to services)
-  tests/        # pytest suite
-alembic/        # migrations
-main.py         # app entrypoint
+backend/
+  main.py                 ASGI re-export (`uvicorn main:app`)
+  app/
+    main.py               FastAPI app: CORS, rate limit, routers
+    core/                 shared infra (config, db, security, get_current_user)
+    models/               shared ORM tables + Alembic barrel (User, tokens, …)
+    modules/
+      auth/               vertical slice: router, service, repos, oauth, schemas
+      onboarding/         vertical slice: router, service, repo, models, schemas
+  tests/                  pytest suite (outside the app package)
+  alembic/                migrations
 ```
 
-Request flow: `routers` → `services` (business logic, e.g. "don't leak whether
-an email exists") → `repositories` (DB reads/writes) → `models`. Everything is
-wired together with FastAPI's `Depends` in `app/core/deps.py`.
+Request flow (inside each module): `router` → `service` (business logic, e.g.
+"don't leak whether an email exists") → `repository` (DB reads/writes) →
+`model`. Shared authn is `get_current_user` in `app/core/deps.py`. Auth-specific
+wiring is `app/modules/auth/deps.py`.
 
 ## 1. Database: Neon (cloud, current) or local PostgreSQL (later)
 
@@ -194,6 +195,21 @@ Postgres in production and SQLite in tests. Google OAuth tests use a fake
 | GET    | `/auth/google/login`          | -           | redirects to Google consent screen |
 | GET    | `/auth/google/callback`       | -           | exchanges code, logs in/links/creates |
 | POST   | `/auth/google/link-confirm`   | -           | completes linking an unverified-email Google identity |
+| POST   | `/energy/ingest`              | X-Ingest-Token | simulator tick; 202 + normalized record |
+| GET    | `/energy/{id}/live`           | Bearer JWT  | dashboard snapshot (solar, load, battery, grid, devices, weather) |
+| GET    | `/energy/{id}/battery`        | Bearer JWT  | latest battery status |
+| GET    | `/energy/{id}/grid`           | Bearer JWT  | latest grid status |
+| GET    | `/energy/{id}/devices`        | Bearer JWT  | latest appliance readings |
+| GET    | `/energy/{id}/weather`        | Bearer JWT  | weather used for the latest tick |
+| GET    | `/energy/{id}/history`        | Bearer JWT  | recent ticks from the in-memory ring buffer |
+| GET    | `/energy/{id}/daily`          | Bearer JWT  | daily kWh totals (`?date=YYYY-MM-DD`) |
+| GET    | `/energy/{id}/hourly`         | Bearer JWT  | 24 hourly kWh buckets for one date |
+
+Ingest is **not** a user JWT — the simulator sends `X-Ingest-Token` matching `INGEST_TOKEN` in `.env`. Live/summary routes reuse `get_current_user`. State is in-memory (process restart clears it). Point the simulator at the API with:
+
+```bash
+python -m simulator.main --ingest-url http://127.0.0.1:8000 --ingest-token dev-ingest-token --weather-mode fallback --ticks 5 --speed 0
+```
 
 All errors use the shape:
 

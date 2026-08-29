@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # --- Rate limiting ---
     RATE_LIMIT_LOGIN: str = "5/minute"
     RATE_LIMIT_PASSWORD_RESET: str = "3/minute"
+    RATE_LIMIT_INGEST: str = "120/minute"
+
+    # --- Telemetry ingest (simulator → backend). Not a user JWT. ---
+    # Fail closed in production if this is still the development default.
+    INGEST_TOKEN: str = "dev-ingest-token"
+    ENERGY_HISTORY_MAX_READINGS: int = 2880
+    ENERGY_BALANCE_TOLERANCE_KW: float = 0.05
 
     # --- Frontend (used to redirect after OAuth completes) ---
     FRONTEND_URL: str = "http://localhost:3000"

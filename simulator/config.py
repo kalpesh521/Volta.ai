@@ -198,6 +198,10 @@ class SimulatorConfig(BaseSettings):
     output_file: str = "data/telemetry.jsonl"
     speed: float = 1.0
 
+    # Optional FastAPI ingest. Empty URL disables publishing.
+    ingest_url: str = ""
+    ingest_token: str = ""
+
     open_meteo_base_url: str = "https://api.open-meteo.com/v1/forecast"
     open_meteo_forecast_days: int = 7
     open_meteo_past_days: int = 1

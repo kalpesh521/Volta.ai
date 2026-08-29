@@ -115,6 +115,24 @@ class OnboardingAlreadyCompleteError(AppError):
         super().__init__(message)
 
 
+class InvalidIngestTokenError(AppError):
+    """Simulator ingest uses a shared secret, not a user JWT."""
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "invalid_ingest_token"
+
+    def __init__(self, message: str = "Invalid or missing ingest token"):
+        super().__init__(message)
+
+
+class EnergyNotFoundError(AppError):
+    """No telemetry has been ingested yet for this household."""
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "energy_not_found"
+
+    def __init__(self, message: str = "No telemetry found for this household."):
+        super().__init__(message)
+
+
 def _error_body(code: str, message: str, details: dict | None = None) -> dict:
     return {"success": False, "error": {"code": code, "message": message, **(details or {})}}
 

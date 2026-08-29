@@ -1,0 +1,1 @@
+"""Volta API application package."""

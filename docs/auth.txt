@@ -19,44 +19,43 @@ Request flow (ALWAYS say this in interviews):
 
 --------------------------------------------------------------------------------
 backend/
-  main.py                 App entry: CORS, rate limit, routers, exception handlers
+  main.py                 ASGI re-export (`uvicorn main:app`)
   .env                    Secrets (never commit)
   alembic/                DB migrations
+  tests/                  pytest + httpx.AsyncClient (in-memory SQLite)
 
   app/
+    main.py               App entry: CORS, rate limit, routers, exception handlers
     core/
       config.py           pydantic-settings from .env
       database.py         async engine + get_db() (commit/rollback)
       security.py         bcrypt, JWT create/decode, opaque token hash
-      deps.py             FastAPI Depends (repos, services, get_current_user)
+      deps.py             get_current_user (shared) + re-exports auth deps
       exceptions.py       AppError + consistent error JSON shape
       rate_limit.py       slowapi Limiter
       types.py            portable GUID (Postgres UUID / SQLite tests)
 
-    models/               SQLAlchemy tables
+    models/               Shared SQLAlchemy tables + Alembic barrel
       user.py
       refresh_token.py
       auth_provider.py
       password_reset_token.py
 
-    schemas/              Pydantic DTOs
-      user.py             UserCreate, UserOut
-      auth.py             Login, TokenResponse, Refresh, Reset, OAuth link
-
-    repositories/         Pure DB read/write (no business rules)
-    services/             Business logic
-      auth_service.py     signup, login, password reset
+    modules/auth/         Vertical slice (same layers as before)
+      router.py           /auth/signup|login|refresh|logout|me|password-reset
+      oauth_router.py     /auth/google/login|callback|link-confirm
+      schemas.py          Login, TokenResponse, Refresh, Reset, OAuth link
+      user_schemas.py     UserCreate, UserOut
+      service.py          signup, login, password reset
       token_service.py    issue / rotate / revoke tokens
       oauth_service.py    account linking policy
+      deps.py             FastAPI Depends (repos, services, Google client)
+      repositories/       Pure DB read/write (no business rules)
       oauth/
         base.py           OAuthProviderClient interface (provider-agnostic)
         google.py         Google OIDC client + ID token verify
 
-    routers/
-      auth.py             /auth/signup|login|refresh|logout|me|password-reset
-      oauth.py            /auth/google/login|callback|link-confirm
-
-    tests/                pytest + httpx.AsyncClient (in-memory SQLite)
+    modules/onboarding/   Separate vertical slice (solar setup wizard)
 
 ================================================================================
 2. DATABASE SCHEMA (4 TABLES)
@@ -393,17 +392,17 @@ A: Fine for single process. Multi-instance needs Redis-backed limiter.
 12. CHEAT SHEET - KEY FILES TO OPEN IF ASKED TO WALK CODE
 ================================================================================
 
-Architecture entry:     main.py
+Architecture entry:     app/main.py  (uvicorn main:app still works)
 Config:                 app/core/config.py
 DB commit pattern:      app/core/database.py  (get_db commit/rollback)
 JWT + bcrypt:           app/core/security.py
 Current user DI:        app/core/deps.py
-Password auth logic:    app/services/auth_service.py
-Token rotation:         app/services/token_service.py
-OAuth linking policy:   app/services/oauth_service.py
-Google ID token verify: app/services/oauth/google.py
-Auth routes:            app/routers/auth.py
-OAuth routes:           app/routers/oauth.py
+Password auth logic:    app/modules/auth/service.py
+Token rotation:         app/modules/auth/token_service.py
+OAuth linking policy:   app/modules/auth/oauth_service.py
+Google ID token verify: app/modules/auth/oauth/google.py
+Auth routes:            app/modules/auth/router.py
+OAuth routes:           app/modules/auth/oauth_router.py
 Migration:              alembic/versions/202608050001_initial_auth_schema.py
 
 ================================================================================

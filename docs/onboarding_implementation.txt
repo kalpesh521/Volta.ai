@@ -19,11 +19,11 @@ Request flow (ALWAYS say this in interviews):
   core/     = shared config, DB session, get_current_user, AppError handlers
 
 Onboarding lives as a self-contained module under app/modules/onboarding/
-Auth code is untouched — app/modules/auth/ is a thin re-export wrapper only.
+Auth is the same shape: app/modules/auth/ (router, service, repos, oauth).
 
 --------------------------------------------------------------------------------
 backend/
-  main.py                 App entry: includes auth_router + onboarding_router
+  main.py                 ASGI re-export; app lives in app/main.py
   alembic/
     versions/
       202608220001_onboarding_schema.py   4 new tables
@@ -36,8 +36,7 @@ backend/
     models/__init__.py    Imports onboarding ORM models for Alembic discovery
 
     modules/
-      auth/
-        __init__.py       Re-exports auth_router, oauth_router (no code move)
+      auth/               Password + Google OAuth vertical slice
 
       onboarding/         Full vertical slice
         enums.py          PanelType, SystemType, InverterBrand, BackupHours,

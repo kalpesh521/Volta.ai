@@ -1,90 +1,49 @@
 """
-FastAPI `Depends` providers.
+Shared FastAPI `Depends` providers.
 
-Wires DB session -> repositories -> services, and extracts/validates the
-current user from the access token. Kept in one place so routers stay thin
-and swapping an implementation (e.g. the Google OAuth client, for tests)
-only requires overriding here.
+Cross-cutting authn (`get_current_user`) lives here because onboarding and
+future modules all need it. Auth-specific wiring lives in
+`app.modules.auth.deps` and is re-exported so existing
+`from app.core.deps import get_auth_service` imports keep working — FastAPI
+`dependency_overrides` keys on the function object, so tests that override
+`get_google_oauth_client` from this module still hit the same provider.
 """
 import uuid
 
 import jwt
 from fastapi import Depends, Header, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.core.exceptions import InvalidTokenError
 from app.core.security import TokenType, decode_token
 from app.models.user import User
-from app.repositories.auth_provider_repository import AuthProviderRepository
-from app.repositories.password_reset_repository import PasswordResetRepository
-from app.repositories.refresh_token_repository import RefreshTokenRepository
-from app.repositories.user_repository import UserRepository
-from app.services.auth_service import AuthService
-from app.services.oauth.base import OAuthProviderClient
-from app.services.oauth.google import GoogleOAuthClient
-from app.services.oauth_service import OAuthService
-from app.services.token_service import TokenService
+from app.modules.auth.deps import (
+    get_auth_provider_repository,
+    get_auth_service,
+    get_google_oauth_client,
+    get_oauth_service,
+    get_password_reset_repository,
+    get_refresh_token_repository,
+    get_token_service,
+    get_user_repository,
+)
+from app.modules.auth.repositories.user_repository import UserRepository
 
 # Shown as the green Authorize lock in /docs. Swagger reliably sends this.
 # (A plain "authorization" Header parameter is often NOT sent by Swagger UI.)
 _bearer_scheme = HTTPBearer(auto_error=False)
 
-# --- Repositories ---
-
-
-def get_user_repository(db: AsyncSession = Depends(get_db)) -> UserRepository:
-    return UserRepository(db)
-
-
-def get_refresh_token_repository(db: AsyncSession = Depends(get_db)) -> RefreshTokenRepository:
-    return RefreshTokenRepository(db)
-
-
-def get_auth_provider_repository(db: AsyncSession = Depends(get_db)) -> AuthProviderRepository:
-    return AuthProviderRepository(db)
-
-
-def get_password_reset_repository(db: AsyncSession = Depends(get_db)) -> PasswordResetRepository:
-    return PasswordResetRepository(db)
-
-
-# --- Services ---
-
-
-def get_token_service(
-    refresh_token_repo: RefreshTokenRepository = Depends(get_refresh_token_repository),
-) -> TokenService:
-    return TokenService(refresh_token_repo)
-
-
-def get_auth_service(
-    user_repo: UserRepository = Depends(get_user_repository),
-    token_service: TokenService = Depends(get_token_service),
-    password_reset_repo: PasswordResetRepository = Depends(get_password_reset_repository),
-) -> AuthService:
-    return AuthService(user_repo, token_service, password_reset_repo)
-
-
-def get_oauth_service(
-    user_repo: UserRepository = Depends(get_user_repository),
-    auth_provider_repo: AuthProviderRepository = Depends(get_auth_provider_repository),
-    token_service: TokenService = Depends(get_token_service),
-) -> OAuthService:
-    return OAuthService(user_repo, auth_provider_repo, token_service)
-
-
-def get_google_oauth_client() -> OAuthProviderClient:
-    """
-    Returned as the `OAuthProviderClient` interface (not the concrete Google
-    class) so routers/services never depend on Google specifically - and so
-    tests can override this with a fake provider client.
-    """
-    return GoogleOAuthClient()
-
-
-# --- Current-user extraction ---
+__all__ = [
+    "get_user_repository",
+    "get_refresh_token_repository",
+    "get_auth_provider_repository",
+    "get_password_reset_repository",
+    "get_token_service",
+    "get_auth_service",
+    "get_oauth_service",
+    "get_google_oauth_client",
+    "get_current_user",
+]
 
 
 def _extract_raw_token(

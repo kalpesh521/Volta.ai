@@ -8,15 +8,15 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from simulator.battery_engine import BatteryEngine
+from simulator.engines.battery import BatteryEngine
 from simulator.config import SimulatorConfig
-from simulator.energy_balance import dispatch_energy, validate_energy_balance
-from simulator.grid_engine import GridEngine, grid_is_available
-from simulator.load_generator import LoadGenerator
+from simulator.engines.energy_balance import dispatch_energy, validate_energy_balance
+from simulator.engines.grid import GridEngine, grid_is_available
+from simulator.engines.load import LoadGenerator
 from simulator.models import WeatherRecord
-from simulator.solar_generator import SolarGenerator
+from simulator.engines.solar import SolarGenerator
 from simulator.telemetry_generator import TelemetryGenerator
-from simulator.weather_client import WeatherClient, fallback_weather
+from simulator.clients.weather import WeatherClient, fallback_weather
 
 TZ = ZoneInfo("Asia/Kolkata")
 
@@ -286,7 +286,7 @@ async def test_full_tick_energy_balance_and_night_solar():
 
 
 def test_geocoding_parses_open_meteo_result():
-    from simulator.geocoding_client import apply_location, parse_result
+    from simulator.clients.geocoding import apply_location, parse_result
 
     location = parse_result(
         {
@@ -314,7 +314,7 @@ def test_geocoding_parses_open_meteo_result():
 
 @pytest.mark.asyncio
 async def test_geocoding_failure_uses_configured_fallback(monkeypatch):
-    from simulator.geocoding_client import GeocodingClient
+    from simulator.clients.geocoding import GeocodingClient
 
     client = GeocodingClient(_cfg(location_name="Nowhereville"))
 
@@ -329,7 +329,7 @@ async def test_geocoding_failure_uses_configured_fallback(monkeypatch):
 
 
 def test_gps_forecast_meta_sets_timezone():
-    from simulator.geocoding_client import parse_forecast_meta
+    from simulator.clients.geocoding import parse_forecast_meta
 
     location = parse_forecast_meta(
         {"timezone": "Asia/Kolkata", "elevation": 12.0},
@@ -346,7 +346,7 @@ def test_gps_forecast_meta_sets_timezone():
 
 @pytest.mark.asyncio
 async def test_gps_timezone_failure_keeps_coordinates(monkeypatch):
-    from simulator.geocoding_client import GeocodingClient
+    from simulator.clients.geocoding import GeocodingClient
 
     client = GeocodingClient(_cfg())
 
@@ -363,7 +363,7 @@ async def test_gps_timezone_failure_keeps_coordinates(monkeypatch):
 
 
 def test_live_bus_close_drops_publish_and_wait():
-    from simulator.live_bus import LiveBus
+    from simulator.dashboard.live_bus import LiveBus
 
     stream = LiveBus()
     stream.close()
@@ -372,3 +372,13 @@ def test_live_bus_close_drops_publish_and_wait():
     stream.publish({"solar_power_kw": 1.0})
     assert stream.latest() is None
     assert stream.closed is True
+
+
+def test_ingest_url_appends_energy_path():
+    from simulator.clients.ingest import resolve_ingest_url
+
+    assert resolve_ingest_url("http://127.0.0.1:8000") == "http://127.0.0.1:8000/energy/ingest"
+    assert (
+        resolve_ingest_url("http://127.0.0.1:8000/energy/ingest/")
+        == "http://127.0.0.1:8000/energy/ingest"
+    )

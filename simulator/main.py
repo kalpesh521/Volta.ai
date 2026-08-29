@@ -86,6 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip Open-Meteo geocoding and use LATITUDE/LONGITUDE from config",
     )
+    parser.add_argument(
+        "--ingest-url",
+        type=str,
+        help="FastAPI base URL or full /energy/ingest URL (e.g. http://127.0.0.1:8000)",
+    )
+    parser.add_argument(
+        "--ingest-token",
+        type=str,
+        help="Shared secret sent as X-Ingest-Token (must match backend INGEST_TOKEN)",
+    )
     return parser
 
 
@@ -122,6 +132,10 @@ def apply_cli_overrides(config: SimulatorConfig, args: argparse.Namespace) -> Si
         updates["location_country_code"] = args.country_code
     if args.no_geocode:
         updates["geocode_on_start"] = False
+    if args.ingest_url:
+        updates["ingest_url"] = args.ingest_url
+    if args.ingest_token:
+        updates["ingest_token"] = args.ingest_token
     merged = config.model_copy(update=updates)
     return apply_scenario(merged, merged.scenario)
 
@@ -137,8 +151,8 @@ async def run(
     dashboard_port: int = 8765,
     live_clock: bool = True,
 ) -> None:
-    from simulator import location_state
-    from simulator.geocoding_client import GeocodingClient, apply_location
+    from simulator.dashboard import location_state
+    from simulator.clients.geocoding import GeocodingClient, apply_location
 
     if config.geocode_on_start:
         location = await GeocodingClient(config).resolve(config.location_name)
@@ -149,7 +163,7 @@ async def run(
         location_state.current_location = GeocodingClient(config).from_config()
 
     if dashboard:
-        from simulator.dashboard_server import start_dashboard_server
+        from simulator.dashboard.server import start_dashboard_server
 
         start_dashboard_server(dashboard_host, dashboard_port)
         logger.info(
@@ -162,6 +176,12 @@ async def run(
     location_state.active_generator = generator
     output_path = generator.open_output()
     tz = ZoneInfo(config.timezone)
+    ingest_client = None
+    if config.ingest_url.strip():
+        from simulator.clients.ingest import IngestClient
+
+        ingest_client = IngestClient(config.ingest_url, config.ingest_token)
+        logger.info("Publishing ticks to %s", ingest_client.url)
     logger.info("Writing JSONL to %s", output_path)
     logger.info(
         "household=%s scenario=%s weather=%s interval=%ss speed=%s live_clock=%s",
@@ -174,15 +194,17 @@ async def run(
     )
 
     first_ts = datetime.now(tz=tz) if live_clock else start_time
-    await generator.warmup(first_ts)
     sim_ts = first_ts
     count = 0
     try:
+        await generator.warmup(first_ts)
         while not location_state.stop_requested.is_set() and (ticks <= 0 or count < ticks):
             tz = ZoneInfo(generator.config.timezone)
             if live_clock:
                 sim_ts = datetime.now(tz=tz)
             record = await generator.step(sim_ts)
+            if ingest_client is not None:
+                await ingest_client.publish(record)
             if not quiet:
                 if pretty:
                     print(json.dumps(record.model_dump(mode="json"), indent=2, ensure_ascii=False), flush=True)
@@ -213,6 +235,8 @@ async def run(
     finally:
         location_state.request_stop()
         generator.close_output()
+        if ingest_client is not None:
+            await ingest_client.aclose()
         if location_state.stop_requested.is_set():
             logger.info("Simulator stopped after %s readings", count)
 

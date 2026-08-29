@@ -12,18 +12,18 @@ from pathlib import Path
 from typing import Any, TextIO
 from zoneinfo import ZoneInfo
 
-from simulator.battery_engine import BatteryEngine
+from simulator.engines.battery import BatteryEngine
 from simulator.config import SimulatorConfig, apply_scenario
-from simulator.device_engine import DeviceEngine
-from simulator.energy_balance import dispatch_energy, validate_energy_balance
-from simulator.geocoding_client import apply_location
-from simulator.grid_engine import GridEngine, grid_is_available
-from simulator.live_bus import bus
-from simulator.load_generator import LoadGenerator
-from simulator import location_state
+from simulator.engines.device import DeviceEngine
+from simulator.engines.energy_balance import dispatch_energy, validate_energy_balance
+from simulator.clients.geocoding import apply_location
+from simulator.engines.grid import GridEngine, grid_is_available
+from simulator.dashboard.live_bus import bus
+from simulator.engines.load import LoadGenerator
+from simulator.dashboard import location_state
 from simulator.models import LocationRecord, TelemetryRecord, WeatherRecord
-from simulator.solar_generator import SolarGenerator
-from simulator.weather_client import WeatherClient
+from simulator.engines.solar import SolarGenerator
+from simulator.clients.weather import WeatherClient
 
 
 class TelemetryGenerator:

@@ -51,7 +51,7 @@ python -m simulator.main --weather-mode fallback --speed 0 --ticks 12 --pretty
 
 ## Live dashboard
 
-A single HTML dashboard lives in `frontend/suryaa-dashboard.html`. Start the simulator with `--dashboard` so it serves that page and streams telemetry over SSE.
+A single HTML dashboard lives in `frontend/public/suryaa-dashboard.html`. Start the simulator with `--dashboard` so it serves that page and streams telemetry over SSE.
 
 `--dashboard` uses the **current clock** and emits **one reading every second** (`22:04:01`, `22:04:02`, …). Do not pass `--speed 60` for live viewing — that jumped the timestamp by a full minute each tick.
 
@@ -92,6 +92,16 @@ If you pass `--start-time`, the generator switches to simulated time (useful for
 | `--location` | City/place name resolved by Open-Meteo geocoding |
 | `--country-code` | ISO country filter (e.g. `IN`) |
 | `--no-geocode` | Use `.env` coordinates only |
+| `--ingest-url` | FastAPI base URL (ticks are POSTed to `/energy/ingest`) |
+| `--ingest-token` | Shared secret matching backend `INGEST_TOKEN` |
+
+With the backend running (`uvicorn main:app --reload` in `backend/`):
+
+```bash
+python -m simulator.main --ingest-url http://127.0.0.1:8000 --ingest-token dev-ingest-token --weather-mode fallback --ticks 5 --speed 0
+```
+
+A failed ingest is logged and skipped — the generator keeps writing JSONL.
 
 ## Open-Meteo weather API
 
@@ -314,7 +324,7 @@ The simulator is built so telemetry, weather, and devices can change without a r
 | What you want | Where to change |
 |---|---|
 | New / removed env setting | `SimulatorConfig` in `config.py` + `.env.example` |
-| New Open-Meteo variable | `OPEN_METEO_HOURLY_FIELDS` + `WEATHER_FIELD_MAP` + `WeatherRecord` |
+| New Open-Meteo variable | `OPEN_METEO_HOURLY_FIELDS` in `config.py` + `WEATHER_FIELD_MAP` in `models.py` + `WeatherRecord` |
 | New / removed appliance | `DEFAULT_DEVICE_CATALOG` in `config.py`, or `DEVICE_CATALOG_JSON` in `.env` |
 | New telemetry key | Add it on `TelemetryRecord` (or just emit it — `extra="allow"`) and set it in `telemetry_generator.py` |
 
@@ -361,18 +371,13 @@ Coverage includes: night-time solar = 0, cloud and rain derating, inverter clip,
 
 ```
 simulator/
+├── main.py                   # CLI (`python -m simulator.main`)
 ├── config.py                 # env + device catalog
 ├── models.py                 # WeatherRecord, TelemetryRecord, flows
-├── weather_client.py         # Open-Meteo + fallback
-├── geocoding_client.py       # city search + GPS coords → timezone
-├── solar_generator.py
-├── load_generator.py
-├── battery_engine.py
-├── grid_engine.py
-├── device_engine.py
-├── energy_balance.py         # dispatch order + validation
 ├── telemetry_generator.py    # one reading = all engines
-├── main.py                   # CLI
+├── engines/                  # solar, load, battery, grid, device, energy_balance
+├── clients/                  # Open-Meteo weather + geocoding
+├── dashboard/                # HTTP/SSE server, live_bus, location_state
 ├── tests/
 ├── requirements.txt
 └── .env.example
