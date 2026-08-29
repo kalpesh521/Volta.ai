@@ -30,6 +30,8 @@ from app.modules.energy.schemas import (
     WeatherOut,
 )
 from app.modules.energy.store import EnergyStore
+from app.modules.energy.timescale_store import TimescaleTelemetryStore
+from app.modules.energy.redis_live import RedisLiveStore
 
 logger = logging.getLogger("volta.energy")
 
@@ -215,16 +217,38 @@ def to_live(record: TelemetryRecord) -> LiveEnergyOut:
 
 
 class EnergyService:
-    def __init__(self, store: EnergyStore) -> None:
+    def __init__(
+        self,
+        store: EnergyStore,
+        timescale: TimescaleTelemetryStore | None = None,
+        redis_live: RedisLiveStore | None = None,
+    ) -> None:
         self.store = store
+        self.timescale = timescale
+        self.redis_live = redis_live
         self._tolerance_kw = settings.ENERGY_BALANCE_TOLERANCE_KW
 
     async def ingest(self, record: TelemetryRecord) -> TelemetryRecord:
         normalized = normalize_record(record, self._tolerance_kw)
         await self.store.put(normalized)
+        if self.timescale is not None:
+            await self.timescale.upsert(normalized)
+        if self.redis_live is not None:
+            try:
+                await self.redis_live.set_and_publish(normalized)
+            except Exception:
+                logger.exception("redis live update failed after ingest")
         return normalized
 
     async def _require_latest(self, household_id: str) -> TelemetryRecord:
+        if self.redis_live is not None:
+            latest = await self.redis_live.get_latest(household_id)
+            if latest is not None:
+                return latest
+        if self.timescale is not None:
+            latest = await self.timescale.get_latest(household_id)
+            if latest is not None:
+                return latest
         latest = await self.store.get_latest(household_id)
         if latest is None:
             raise EnergyNotFoundError(
@@ -258,8 +282,17 @@ class EnergyService:
         )
 
     async def get_history(self, household_id: str, limit: int = 120) -> HistoryOut:
+        cap = min(limit, 2000)
+        if self.timescale is not None:
+            records = await self.timescale.get_history(household_id, limit=cap)
+            if records:
+                return HistoryOut(
+                    household_id=household_id,
+                    count=len(records),
+                    records=records,
+                )
         await self._require_latest(household_id)
-        records = await self.store.get_history(household_id, limit=min(limit, 2000))
+        records = await self.store.get_history(household_id, limit=cap)
         return HistoryOut(
             household_id=household_id,
             count=len(records),
@@ -269,8 +302,14 @@ class EnergyService:
     async def get_daily(self, household_id: str, day: date | None = None) -> DailySummaryOut:
         latest = await self._require_latest(household_id)
         target = day or _local_date(latest.timestamp)
-        history = await self.store.get_history(household_id)
-        rows = [row for row in history if _local_date(row.timestamp) == target]
+        tz = latest.timestamp.tzinfo or timezone.utc
+        start = datetime(target.year, target.month, target.day, tzinfo=tz)
+        end = start + timedelta(days=1)
+        if self.timescale is not None:
+            rows = await self.timescale.fetch_range(household_id, start, end)
+        else:
+            history = await self.store.get_history(household_id)
+            rows = [row for row in history if _local_date(row.timestamp) == target]
         totals = _totals(rows)
         return DailySummaryOut(
             household_id=household_id,
@@ -286,8 +325,13 @@ class EnergyService:
         latest = await self._require_latest(household_id)
         target = day or _local_date(latest.timestamp)
         tz = latest.timestamp.tzinfo or timezone.utc
-        history = await self.store.get_history(household_id)
-        rows = [row for row in history if _local_date(row.timestamp) == target]
+        start = datetime(target.year, target.month, target.day, tzinfo=tz)
+        end = start + timedelta(days=1)
+        if self.timescale is not None:
+            rows = await self.timescale.fetch_range(household_id, start, end)
+        else:
+            history = await self.store.get_history(household_id)
+            rows = [row for row in history if _local_date(row.timestamp) == target]
 
         buckets: dict[datetime, list[TelemetryRecord]] = {}
         for row in rows:

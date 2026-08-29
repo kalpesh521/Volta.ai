@@ -168,6 +168,39 @@ uvicorn main:app --reload
 Visit `http://localhost:8000/docs` for interactive Swagger UI, or
 `http://localhost:8000/health` for a liveness check.
 
+### Ingest worker (RabbitMQ → Timescale → Redis)
+
+Separate process from uvicorn. Validates ticks, upserts TimescaleDB
+(`telemetry_ticks` hypertable), updates Redis live state, then ACKs.
+Poison JSON goes to `telemetry.ingest.dead`. Start compose, then:
+
+```bash
+cd backend
+source venv/bin/activate
+python -m app.workers.ingest
+```
+
+Dashboard live WebSocket (user JWT):
+
+```text
+ws://127.0.0.1:8000/ws/energy?token=<access_token>&household_id=home_001
+```
+
+Open the HTML dashboard against the backend:
+
+```text
+http://127.0.0.1:8765/suryaa-dashboard.html?source=backend&token=<access_token>&household=home_001
+```
+
+(or serve `frontend/public/suryaa-dashboard.html` and pass the same query).
+
+If the queue was created by the simulator before the worker existed, delete
+it once so it can be redeclared with a dead-letter exchange:
+
+```bash
+docker compose exec rabbitmq rabbitmqctl delete_queue telemetry.ingest -p volta
+```
+
 ## 6. Run the tests
 
 ```bash

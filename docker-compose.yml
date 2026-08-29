@@ -1,0 +1,61 @@
+# Local telemetry infra for the backend ingest pipeline.
+# Neon (DATABASE_URL) stays the auth/onboarding database — do not put
+# telemetry hypertables there.
+#
+#   docker compose up -d
+#   docker compose ps
+#   RabbitMQ UI: http://127.0.0.1:15672  (volta / volta)
+#
+# Production later: replace these URLs with CloudAMQP / Timescale Cloud / Redis Cloud.
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: volta
+      RABBITMQ_DEFAULT_PASS: volta
+      RABBITMQ_DEFAULT_VHOST: volta
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: volta
+      POSTGRES_PASSWORD: volta
+      POSTGRES_DB: volta_ts
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U volta -d volta_ts"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 8
+
+volumes:
+  rabbitmq_data:
+  timescale_data:
+  redis_data:

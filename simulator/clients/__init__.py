@@ -1,1 +1,1 @@
-"""External I/O: Open-Meteo weather and geocoding."""
+"""External I/O: Open-Meteo weather/geocoding, optional HTTP ingest, RabbitMQ."""

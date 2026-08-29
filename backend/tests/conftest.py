@@ -10,6 +10,10 @@ Each test runs inside a SAVEPOINT that's rolled back afterwards, so tests
 never leak state into one another (the "transactional rollback per test"
 strategy called out in the spec).
 """
+import os
+
+os.environ.setdefault("TELEMETRY_IO_ENABLED", "false")
+
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio

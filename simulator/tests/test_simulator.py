@@ -382,3 +382,85 @@ def test_ingest_url_appends_energy_path():
         resolve_ingest_url("http://127.0.0.1:8000/energy/ingest/")
         == "http://127.0.0.1:8000/energy/ingest"
     )
+
+
+def _telemetry_record() -> "TelemetryRecord":
+    from simulator.models import TelemetryRecord
+
+    ts = datetime(2026, 8, 29, 12, 0, tzinfo=TZ)
+    return TelemetryRecord(
+        timestamp=ts,
+        household_id="home_001",
+        data_source="simulator",
+        data_quality="simulated",
+        solar_power_kw=3.0,
+        solar_energy_interval_kwh=0.05,
+        solar_energy_today_kwh=4.2,
+        solar_energy_total_kwh=120.0,
+        home_load_power_kw=1.5,
+        home_consumption_interval_kwh=0.025,
+        home_consumption_today_kwh=3.1,
+        home_consumption_total_kwh=90.0,
+        battery_soc_percent=62.0,
+        battery_soh_percent=98.0,
+        battery_charge_power_kw=1.5,
+        battery_discharge_power_kw=0.0,
+        battery_energy_available_kwh=5.0,
+        battery_status="charging",
+        grid_status="available",
+        grid_import_power_kw=0.0,
+        grid_export_power_kw=0.0,
+        total_import_kwh=10.0,
+        total_export_kwh=8.0,
+        solar_to_home_kw=1.5,
+        solar_to_battery_kw=1.5,
+        solar_to_grid_kw=0.0,
+        battery_to_home_kw=0.0,
+        grid_to_home_kw=0.0,
+        unserved_load_kw=0.0,
+        energy_balance_status="valid",
+        energy_balance_error_kw=0.0,
+        energy_balance_valid=True,
+        devices=[],
+        weather={},
+    )
+
+
+def test_rabbitmq_build_message_is_persistent_json():
+    import json
+
+    from aio_pika import DeliveryMode
+
+    from simulator.clients.rabbitmq import APP_ID, build_message
+
+    record = _telemetry_record()
+    message = build_message(record)
+    body = json.loads(message.body.decode("utf-8"))
+    assert body["household_id"] == "home_001"
+    assert body["solar_power_kw"] == 3.0
+    assert message.content_type == "application/json"
+    assert message.delivery_mode == DeliveryMode.PERSISTENT
+    assert message.app_id == APP_ID
+    assert message.headers["household_id"] == "home_001"
+
+
+async def test_rabbitmq_publish_does_not_raise_when_broker_down():
+    from simulator.clients.rabbitmq import RabbitMQPublisher
+
+    publisher = RabbitMQPublisher(
+        "amqp://volta:volta@127.0.0.1:1/volta",
+        timeout_seconds=0.2,
+    )
+    await publisher.publish(_telemetry_record())
+    await publisher.aclose()
+    assert publisher._fail_count == 1
+
+
+def test_cli_rabbitmq_url_override():
+    from simulator.main import apply_cli_overrides, build_parser
+
+    args = build_parser().parse_args(
+        ["--rabbitmq-url", "amqp://volta:volta@localhost:5672/volta", "--no-geocode"]
+    )
+    config = apply_cli_overrides(_cfg(geocode_on_start=False), args)
+    assert config.rabbitmq_url == "amqp://volta:volta@localhost:5672/volta"

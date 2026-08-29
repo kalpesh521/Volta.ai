@@ -1,5 +1,6 @@
 """Energy / telemetry vertical slice.
 
-Ingest from the simulator, keep a per-household live snapshot + ring buffer,
-and expose dashboard-ready read APIs. No Postgres persistence in this module.
+HTTP ingest remains for tests/dev (`INGEST_HTTP_ENABLED`). Production ingest is
+the RabbitMQ worker, which validates, writes TimescaleDB, updates Redis, then
+ACKs. The dashboard connects to `GET /ws/energy`.
 """

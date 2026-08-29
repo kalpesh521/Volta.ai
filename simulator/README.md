@@ -92,16 +92,27 @@ If you pass `--start-time`, the generator switches to simulated time (useful for
 | `--location` | City/place name resolved by Open-Meteo geocoding |
 | `--country-code` | ISO country filter (e.g. `IN`) |
 | `--no-geocode` | Use `.env` coordinates only |
-| `--ingest-url` | FastAPI base URL (ticks are POSTed to `/energy/ingest`) |
+| `--ingest-url` | FastAPI base URL (ticks are POSTed to `/energy/ingest`, tests/dev only) |
 | `--ingest-token` | Shared secret matching backend `INGEST_TOKEN` |
+| `--rabbitmq-url` | AMQP URL. Empty / omitted = do not publish. Backend ingest path. |
 
-With the backend running (`uvicorn main:app --reload` in `backend/`):
+Production ingest is **RabbitMQ**, not HTTP. The simulator still does not talk to Redis, TimescaleDB, or WebSocket.
+
+```bash
+# Slice 2: publish 5 ticks to local Docker RabbitMQ, then exit
+python -m simulator.main \
+  --rabbitmq-url amqp://volta:volta@localhost:5672/volta \
+  --weather-mode fallback --no-geocode \
+  --start-time 2026-08-29T12:00:00 --ticks 5 --speed 0 --quiet
+```
+
+A failed AMQP publish is logged and skipped — the generator keeps writing JSONL.
+
+With the backend running (`uvicorn main:app --reload` in `backend/`) HTTP ingest still works for tests:
 
 ```bash
 python -m simulator.main --ingest-url http://127.0.0.1:8000 --ingest-token dev-ingest-token --weather-mode fallback --ticks 5 --speed 0
 ```
-
-A failed ingest is logged and skipped — the generator keeps writing JSONL.
 
 ## Open-Meteo weather API
 
@@ -355,6 +366,9 @@ See `.env.example` for the full list. Important ones:
 | `WEATHER_MODE` | `live` |
 | `SCENARIO` | `normal_day` |
 | `OUTPUT_FILE` | `data/telemetry.jsonl` |
+| `RABBITMQ_URL` | empty (disabled). Local: `amqp://volta:volta@localhost:5672/volta` |
+| `RABBITMQ_EXCHANGE` | `telemetry` |
+| `RABBITMQ_ROUTING_KEY` | `telemetry.ingest` |
 | `OPEN_METEO_BASE_URL` | `https://api.open-meteo.com/v1/forecast` |
 
 ## Tests
@@ -376,7 +390,7 @@ simulator/
 ├── models.py                 # WeatherRecord, TelemetryRecord, flows
 ├── telemetry_generator.py    # one reading = all engines
 ├── engines/                  # solar, load, battery, grid, device, energy_balance
-├── clients/                  # Open-Meteo weather + geocoding
+├── clients/                  # Open-Meteo, optional HTTP ingest, RabbitMQ publisher
 ├── dashboard/                # HTTP/SSE server, live_bus, location_state
 ├── tests/
 ├── requirements.txt

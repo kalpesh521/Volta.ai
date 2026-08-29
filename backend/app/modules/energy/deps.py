@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 
 from app.core.config import settings
 from app.core.exceptions import InvalidIngestTokenError
@@ -21,8 +21,13 @@ def get_energy_store() -> EnergyStore:
     return energy_store
 
 
-def get_energy_service(store: EnergyStore = Depends(get_energy_store)) -> EnergyService:
-    return EnergyService(store)
+def get_energy_service(
+    request: Request,
+    store: EnergyStore = Depends(get_energy_store),
+) -> EnergyService:
+    timescale = getattr(request.app.state, "timescale", None)
+    redis_live = getattr(request.app.state, "redis_live", None)
+    return EnergyService(store, timescale=timescale, redis_live=redis_live)
 
 
 def _token_digest(value: str) -> bytes:

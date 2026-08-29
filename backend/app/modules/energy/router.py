@@ -23,7 +23,7 @@ the TelemetryRecord body as a query parameter.
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
 
 from app.core.config import settings
 from app.core.deps import get_current_user
@@ -76,6 +76,8 @@ async def ingest_telemetry(
     Returns **202** with the normalized record. Invalid payloads return **400**.
     Missing/wrong `X-Ingest-Token` returns **401**.
     """
+    if not settings.INGEST_HTTP_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return await service.ingest(payload)
 
 

@@ -96,6 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         help="Shared secret sent as X-Ingest-Token (must match backend INGEST_TOKEN)",
     )
+    parser.add_argument(
+        "--rabbitmq-url",
+        type=str,
+        help="AMQP URL, e.g. amqp://volta:volta@localhost:5672/volta (empty = disabled)",
+    )
     return parser
 
 
@@ -136,6 +141,8 @@ def apply_cli_overrides(config: SimulatorConfig, args: argparse.Namespace) -> Si
         updates["ingest_url"] = args.ingest_url
     if args.ingest_token:
         updates["ingest_token"] = args.ingest_token
+    if args.rabbitmq_url:
+        updates["rabbitmq_url"] = args.rabbitmq_url
     merged = config.model_copy(update=updates)
     return apply_scenario(merged, merged.scenario)
 
@@ -177,11 +184,26 @@ async def run(
     output_path = generator.open_output()
     tz = ZoneInfo(config.timezone)
     ingest_client = None
+    rabbitmq_publisher = None
     if config.ingest_url.strip():
         from simulator.clients.ingest import IngestClient
 
         ingest_client = IngestClient(config.ingest_url, config.ingest_token)
-        logger.info("Publishing ticks to %s", ingest_client.url)
+        logger.info("Publishing ticks over HTTP to %s", ingest_client.url)
+    if config.rabbitmq_url.strip():
+        from simulator.clients.rabbitmq import RabbitMQPublisher
+
+        rabbitmq_publisher = RabbitMQPublisher(
+            config.rabbitmq_url,
+            exchange=config.rabbitmq_exchange,
+            routing_key=config.rabbitmq_routing_key,
+            timeout_seconds=config.rabbitmq_publish_timeout_seconds,
+        )
+        logger.info(
+            "Publishing ticks to RabbitMQ exchange=%s routing_key=%s",
+            config.rabbitmq_exchange,
+            config.rabbitmq_routing_key,
+        )
     logger.info("Writing JSONL to %s", output_path)
     logger.info(
         "household=%s scenario=%s weather=%s interval=%ss speed=%s live_clock=%s",
@@ -205,6 +227,8 @@ async def run(
             record = await generator.step(sim_ts)
             if ingest_client is not None:
                 await ingest_client.publish(record)
+            if rabbitmq_publisher is not None:
+                await rabbitmq_publisher.publish(record)
             if not quiet:
                 if pretty:
                     print(json.dumps(record.model_dump(mode="json"), indent=2, ensure_ascii=False), flush=True)
@@ -237,6 +261,8 @@ async def run(
         generator.close_output()
         if ingest_client is not None:
             await ingest_client.aclose()
+        if rabbitmq_publisher is not None:
+            await rabbitmq_publisher.aclose()
         if location_state.stop_requested.is_set():
             logger.info("Simulator stopped after %s readings", count)
 

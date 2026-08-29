@@ -46,7 +46,12 @@ class Settings(BaseSettings):
 
     # --- CORS ---
     # Explicit allow-list, never "*", because we allow credentials (cookies/auth headers).
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:8765",
+        "http://localhost:8765",
+    ]
 
     # --- Google OAuth ---
     GOOGLE_CLIENT_ID: str = ""
@@ -58,11 +63,41 @@ class Settings(BaseSettings):
     RATE_LIMIT_PASSWORD_RESET: str = "3/minute"
     RATE_LIMIT_INGEST: str = "120/minute"
 
-    # --- Telemetry ingest (simulator → backend). Not a user JWT. ---
+    # --- Telemetry ingest (HTTP path = tests/dev only). Not a user JWT. ---
     # Fail closed in production if this is still the development default.
     INGEST_TOKEN: str = "dev-ingest-token"
+    INGEST_HTTP_ENABLED: bool = True
     ENERGY_HISTORY_MAX_READINGS: int = 2880
     ENERGY_BALANCE_TOLERANCE_KW: float = 0.05
+
+    # TimescaleDB holds telemetry history. Separate from DATABASE_URL (auth/onboarding).
+    TIMESCALE_DATABASE_URL: str = (
+        "postgresql+asyncpg://volta:volta@localhost:5433/volta_ts"
+    )
+    TIMESCALE_SSL_REQUIRED: bool = False
+    TIMESCALE_COMPRESS_AFTER_DAYS: int = 7
+    TIMESCALE_RETENTION_DAYS: int = 90
+
+    # Redis holds the latest snapshot + pub/sub for WebSocket fan-out.
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_KEY_PREFIX: str = "volta:live:"
+    REDIS_LIVE_TTL_SECONDS: int = 120
+
+    # RabbitMQ: simulator publishes, backend worker consumes.
+    RABBITMQ_URL: str = "amqp://volta:volta@localhost:5672/volta"
+    RABBITMQ_EXCHANGE: str = "telemetry"
+    RABBITMQ_EXCHANGE_TYPE: str = "topic"
+    RABBITMQ_ROUTING_KEY: str = "telemetry.ingest"
+    RABBITMQ_QUEUE: str = "telemetry.ingest"
+    RABBITMQ_PREFETCH: int = 50
+    RABBITMQ_DLX: str = "telemetry.dlx"
+    RABBITMQ_DLQ: str = "telemetry.ingest.dead"
+
+    # Dashboard live feed (FastAPI WebSocket). Auth is the user JWT.
+    WS_PATH: str = "/ws/energy"
+    WS_HEARTBEAT_SECONDS: int = 30
+    # False in pytest so HTTP tests stay on the in-memory store.
+    TELEMETRY_IO_ENABLED: bool = True
 
     # --- Frontend (used to redirect after OAuth completes) ---
     FRONTEND_URL: str = "http://localhost:3000"

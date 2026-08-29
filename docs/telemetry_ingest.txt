@@ -1,0 +1,1167 @@
+================================================================================
+VOLTA TELEMETRY INGEST - INTERVIEW QUICK REVISION
+================================================================================
+Project: Backend ingest of solar-home ticks (Suryaa / Volta.ai)
+Stack: Simulator (aio-pika publisher) | RabbitMQ 3.13
+         FastAPI worker (separate process) | TimescaleDB 2.x | Redis 7
+         FastAPI API (REST + WebSocket) | JWT from the auth service
+
+Sister docs (do not mix them):
+  docs/simulator.txt   how ONE tick is calculated (PV, battery, weather)
+  docs/auth.txt        how the user JWT is issued (login / refresh)
+  THIS FILE            what happens AFTER the tick is a JSON object
+
+One sentence:
+  Simulator publishes. Backend validates, stores history, holds live state,
+  and pushes to the dashboard. The generator never sees Redis or Timescale.
+
+================================================================================
+1. MEMORY MAP - LAYERS (SAY THIS FIRST)
+================================================================================
+
+Auth request flow (from auth.txt) is:
+
+  Router --> Service --> Repository --> Model/DB
+
+Ingest is a PIPELINE, not an HTTP request. The layers are:
+
+  Publisher (simulator)
+       --> Broker (RabbitMQ exchange + queue)
+            --> Worker (validate + persist)
+                 --> History store (Timescale hypertable)
+                 --> Live store   (Redis key + pub/sub)
+                      --> Read API (FastAPI REST)
+                      --> Push API (FastAPI WebSocket)
+                           --> UI / future React
+
+Write path and read path are DIFFERENT processes:
+
+  WRITE   python -m app.workers.ingest     (no HTTP, no JWT)
+  READ    uvicorn main:app                 (JWT on GET and WS)
+
+--------------------------------------------------------------------------------
+Folder map (only ingest-related files)
+
+volta.ai/
+  docker-compose.yml                 rabbitmq :5672  timescaledb :5433  redis :6379
+
+  simulator/
+    main.py                          live clock loop; optional --rabbitmq-url
+    clients/rabbitmq.py              declare EXCHANGE, publish persistent JSON
+    clients/ingest.py                legacy HTTP POST /energy/ingest (tests)
+
+  backend/app/
+    core/config.py                   every URL / queue name from .env
+    core/database.py                 Neon auth DB  — NOT used for ticks
+    modules/energy/
+      schemas.py                     TelemetryRecord  (same keys as simulator)
+      pipeline.py                    bytes -> ack | reject
+      service.py                     normalize + live/history projections
+      store.py                       in-memory ring (pytest + HTTP ingest)
+      timescale_store.py             upsert / latest / range
+      redis_live.py                  SET + PUBLISH + subscribe
+      router.py                      REST /energy/*
+      ws.py                          WS  /ws/energy
+    workers/ingest.py                consumer: validate -> Timescale -> Redis -> ACK
+    main.py                          lifespan connects Timescale+Redis; /health /ready
+
+  frontend/public/suryaa-dashboard.html
+      no query     = simulator SSE (port 8765)
+      source=backend = FastAPI WebSocket (port 8000)
+
+================================================================================
+2. SYSTEM DIAGRAM
+================================================================================
+
+                         PUBLISH PATH (no login)
+  ┌──────────────────┐   topic exchange "telemetry"
+  │ Simulator        │   routing_key "telemetry.ingest"
+  │ TelemetryRecord  │ ─────────────────────────────────┐
+  │ JSON, persistent │                                  │
+  └──────────────────┘                                  ▼
+                                               ┌─────────────────┐
+                                               │ RabbitMQ vhost  │
+                                               │ volta           │
+                                               │                 │
+                                               │ Q telemetry.    │
+                                               │   ingest        │
+                                               │ DLQ telemetry.  │
+                                               │   ingest.dead   │
+                                               └────────┬────────┘
+                                                        │ consume
+                                                        │ prefetch=50
+                                                        ▼
+                                               ┌─────────────────┐
+                                               │ Ingest worker   │
+                                               │ 1. parse/valid  │
+                                               │ 2. Timescale    │
+                                               │ 3. Redis        │
+                                               │ 4. ACK          │
+                                               └────────┬────────┘
+                                    ┌───────────────────┴───────────────────┐
+                                    ▼                                       ▼
+                         ┌────────────────────┐               ┌─────────────────────┐
+                         │ TimescaleDB        │               │ Redis               │
+                         │ volta_ts :5433     │               │ :6379               │
+                         │ telemetry_ticks    │               │ KEY  live:{id}      │
+                         │ PK (household,time)│               │ CH   live:ch:{id}   │
+                         │ JSONB + kW columns │               │ TTL  120s           │
+                         └─────────┬──────────┘               └──────────┬──────────┘
+                                   │ GET history                         │ GET live
+                                   │                                     │ + pub/sub
+                                   ▼                                     ▼
+                         ┌─────────────────────────────────────────────────────────┐
+                         │ FastAPI  uvicorn :8000                                  │
+                         │ GET /energy/{id}/live|history|daily|hourly   Bearer JWT │
+                         │ WS  /ws/energy?token=JWT&household_id=home_001          │
+                         └────────────────────────────┬────────────────────────────┘
+                                                      │
+                         ┌────────────────────────────┴────────────────────────────┐
+                         │ UI                                                      │
+                         │ 8765/                    generator SSE   (no JWT)       │
+                         │ 8765/?source=backend     product WebSocket (JWT)        │
+                         └─────────────────────────────────────────────────────────┘
+
+Trust boundary:
+  Simulator is untrusted I/O. Worker re-validates every field and recomputes
+  energy-balance. A producer cannot mark its own tick "valid".
+
+================================================================================
+3. DATA CONTRACT (THE TICK)
+================================================================================
+
+One message = one TelemetryRecord. Field names match simulator/models.py
+so the same JSON is valid on both sides. extra="allow" keeps new keys
+(scenario, location, warnings) without a backend deploy.
+
+IDENTITY
+  timestamp            timezone-aware datetime
+  household_id         home_001   regex  [A-Za-z0-9][A-Za-z0-9._-]{0,63}
+  data_source          "simulator"
+  data_quality         simulated | fallback | live | degraded
+
+POWER (kW, never negative)
+  solar_power_kw
+  home_load_power_kw
+  battery_charge_power_kw      and   battery_discharge_power_kw
+                               NEVER one signed battery_power
+  grid_import_power_kw         and   grid_export_power_kw
+                               NEVER both > 0.02 in the same interval
+
+ENERGY (kWh)
+  solar / home  interval + today + total
+  grid / battery interval fields (worker fills them if the producer omitted them)
+
+STATE
+  battery_soc_percent, battery_soh_percent, battery_status
+  grid_status
+  energy_balance_status / valid / error_kw
+  devices[]   weather{}
+
+AC-bus check (worker recomputes, tolerance 0.05 kW):
+
+    solar + grid_import + battery_discharge
+        ≈  home + grid_export + battery_charge
+
+  Fail => status="warning", still stored (same as HTTP 202).
+  Schema fail (negative kW, import+export) => NOT stored, dead-lettered.
+
+AMQP envelope (simulator/clients/rabbitmq.py)
+  body            record.model_dump_json()
+  content_type    application/json
+  delivery_mode   PERSISTENT (survives broker restart)
+  app_id          suryaa-simulator
+  headers         household_id, data_source
+
+Timescale row (telemetry_ticks)
+  time TIMESTAMPTZ
+  household_id TEXT
+  payload JSONB                 full record (source of truth for reads)
+  denormalized kW + interval kWh columns   for cheap filters
+  PRIMARY KEY (household_id, time)
+  hypertable on time
+  ON CONFLICT DO UPDATE         retries are idempotent
+
+Redis
+  SET  volta:live:{household_id}     JSON    EX 120
+  PUBLISH volta:live:ch:{household_id} JSON
+
+WebSocket frame
+  { "type": "hello" | "telemetry" | "ping" | "error",
+    "record": { TelemetryRecord },
+    "live":   { LiveEnergyOut nested solar/load/battery/grid } }
+
+================================================================================
+4. ENDPOINTS + BROKER OBJECTS
+================================================================================
+
+WRITE (not a user JWT)
+
+  AMQP   telemetry / telemetry.ingest     simulator -> worker
+  POST   /energy/ingest                   X-Ingest-Token
+                                          tests/dev only
+                                          202 normalized | 400 | 401
+                                          404 if INGEST_HTTP_ENABLED=false
+
+READ (Authorization: Bearer <access_token>)
+
+  GET  /energy/{household_id}/live
+  GET  /energy/{household_id}/battery
+  GET  /energy/{household_id}/grid
+  GET  /energy/{household_id}/devices
+  GET  /energy/{household_id}/weather
+  GET  /energy/{household_id}/history?limit=120
+  GET  /energy/{household_id}/daily?date=YYYY-MM-DD
+  GET  /energy/{household_id}/hourly?date=YYYY-MM-DD
+
+PUSH
+
+  WS   /ws/energy?token=<access_jwt>&household_id=home_001
+
+OPS
+
+  GET  /health     process up
+  GET  /ready      { timescale, redis, telemetry_io }
+
+BROKER (vhost volta)
+
+  exchange  telemetry              topic, durable
+  exchange  telemetry.dlx          fanout, durable
+  queue     telemetry.ingest       durable, x-dead-letter-exchange=telemetry.dlx
+  queue     telemetry.ingest.dead  durable
+  bind      telemetry --[telemetry.ingest]--> telemetry.ingest
+  bind      telemetry.dlx ------------------> telemetry.ingest.dead
+
+================================================================================
+5. TECH CONTEXT - WHY EACH PIECE EXISTS
+================================================================================
+
+----------------------------------------
+5.1 RabbitMQ  (buffer, not a database)
+----------------------------------------
+
+Problem HTTP ingest cannot solve:
+  Simulator at 1 Hz and a restarting worker. POST fails, ticks are gone.
+  API rate limits and worker crashes become the generator's problem.
+
+AMQP split of responsibility:
+
+  Publisher (simulator)
+    declares the EXCHANGE only
+    publish(routing_key="telemetry.ingest")
+    publisher confirms (channel waits for broker ack of the publish)
+    best-effort: broker down => log, do not kill the generator
+
+  Consumer (worker)
+    declares EXCHANGE + QUEUE + DLX + BINDING
+    set_qos(prefetch=50)   in-flight messages per consumer
+    manual ack
+
+  Why publisher must NOT declare the queue:
+    Queue arguments are immutable. Simulator used to declare the queue
+    WITHOUT x-dead-letter-exchange. Worker declares it WITH that arg.
+    Second declare => PRECONDITION_FAILED.
+    Rule: "owner of the binding owns the queue."
+
+Delivery:
+  Persistent message + durable queue = at-least-once after broker restart.
+  We are NOT exactly-once. Duplicate (household_id, time) is absorbed by
+  Timescale ON CONFLICT DO UPDATE.
+
+Ack matrix (memorize):
+
+  Condition                         Action              Where the tick goes
+  valid + Timescale OK + Redis OK   ACK                 history + live
+  valid + Timescale OK + Redis FAIL ACK                 history only (live heals)
+  valid + Timescale FAIL            NACK requeue        stays on ingest queue
+  invalid JSON / schema             reject requeue=false  DLQ
+  energy-balance warning            ACK (as valid row)  history, flagged warning
+
+Prefetch=50:
+  Worker can hold 50 un-acked messages. Limits RAM if Timescale is slow.
+  Raise only after measuring insert latency.
+
+----------------------------------------
+5.2 Ingest worker  (not inside uvicorn)
+----------------------------------------
+
+Why a separate process:
+  uvicorn --reload respawns workers; each would compete as a consumer.
+  HTTP scale (many readers) ≠ ingest scale (one sequential writer).
+  A crash of the API must not stop ingest, and the reverse.
+
+Entry:  python -m app.workers.ingest     (cwd = backend/)
+
+Order inside handle_message:
+  1. process_telemetry_body(bytes) -> IngestDecision
+  2. reject  -> message.reject(requeue=False)
+  3. timescale.upsert(record)           # must succeed
+  4. redis.set_and_publish(record)      # try/except
+  5. message.ack()
+
+pipeline.py never talks to the network. That keeps pytest offline.
+
+----------------------------------------
+5.3 TimescaleDB  (history)
+----------------------------------------
+
+Why not Neon (auth DATABASE_URL):
+  Neon = OLTP (users, tokens, onboarding). No hypertables here.
+  Ticks are append-mostly, time-ordered, huge over months.
+  Mixing them couples "login is down" to "ingest is down" and blocks
+  compression / retention policies.
+
+What a hypertable is:
+  Ordinary Postgres table + Timescale chunks by time range.
+  Queries with time filters skip old chunks. Compression turns old
+  chunks into columnar form. Retention drops chunks older than N days.
+
+Our policies (ensure_schema on worker/API start):
+  compress after 7 days
+  retain raw ticks 90 days
+  segmentby household_id so one home compresses together
+
+Read strategy in EnergyService:
+  latest   Redis GET, else Timescale ORDER BY time DESC LIMIT 1
+  history  Timescale last N, chronological
+  daily    time >= day_start AND time < day_end
+  hourly   same rows, bucketed in Python into 24 hours
+
+Engine is a SECOND async SQLAlchemy engine (TIMESCALE_DATABASE_URL).
+SSL is TIMESCALE_SSL_REQUIRED, same pattern as DB_SSL_REQUIRED on Neon.
+echo=False — 1 Hz inserts must not flood logs.
+
+----------------------------------------
+5.4 Redis  (live + fan-out)
+----------------------------------------
+
+Two jobs, one server:
+
+  1. Snapshot
+       SET volta:live:home_001 {json} EX 120
+       GET is O(1). TTL means a stopped home goes stale instead of
+       looking "live" forever.
+
+  2. Fan-out
+       PUBLISH volta:live:ch:home_001 {json}
+       Every API replica that subscribed that channel gets the tick
+       and writes it to its own WebSocket clients.
+       Without pub/sub, WS would only work on the replica that
+       happened to hold the connection — broken under load-balance.
+
+Redis is not the diary. If Redis restarts, Timescale still has rows;
+the next tick (or GET latest from Timescale) rebuilds the key.
+
+----------------------------------------
+5.5 FastAPI read side
+----------------------------------------
+
+REST  = pull. Charts, first paint, React Query.
+WS    = push. Live kW without polling.
+
+WebSocket cannot send Authorization easily from a browser, so:
+  query  ?token=ACCESS_JWT&household_id=home_001
+  server decodes JWT (type must be access), loads user from Neon,
+  rejects inactive/unknown. Origin must be in CORS_ORIGINS.
+
+Close codes:
+  4401  bad / missing token
+  1008  bad origin or household_id
+
+Heartbeat {type:ping} every 30s so proxies do not idle-drop the socket.
+
+GET /energy/{id}/live projection (to_live) nests solar/load/battery/grid
+for UI cards. The WS also sends the flat `record` so the existing
+dashboard applyTelemetry() keeps working.
+
+----------------------------------------
+5.6 Two UIs, one generator
+----------------------------------------
+
+Port 8765 without query
+  EventSource /api/stream on the SIMULATOR
+  No JWT, no Redis, no Timescale
+  Purpose: debug the generator
+
+Port 8765 with ?source=backend&token=...&household=home_001
+  WebSocket to FastAPI :8000
+  Purpose: prove the product path
+
+Same kW is expected (same household, same ticks).
+They are NOT the same pipe. Proof: stop the worker — only backend UI freezes.
+Network tab: SSE :8765 vs WS :8000.
+
+React later uses the backend pipe only. No ingest code change.
+Add the Vite origin to CORS_ORIGINS if it is not already 5173/3000.
+
+================================================================================
+6. CODE WORKFLOWS (STEP BY STEP)
+================================================================================
+
+----------------------------------------
+A) HAPPY PATH - one live tick
+----------------------------------------
+1. Simulator live clock (no --start-time) calls generator.step()
+2. RabbitMQPublisher.connect if needed; declare exchange telemetry
+3. publish persistent JSON, routing_key=telemetry.ingest
+4. Worker receives, process_telemetry_body
+5. normalize_record fills missing interval kWh, recomputes AC-bus
+6. INSERT ... ON CONFLICT (household_id, time) DO UPDATE
+7. Redis SET + PUBLISH
+8. ACK
+9. Each WS subscriber for that household gets {type:telemetry, record}
+10. GET /live reads Redis first
+
+----------------------------------------
+B) WORKER START
+----------------------------------------
+1. Connect Timescale, ensure_schema (extension, table, hypertable, policies)
+2. Connect Redis, PING (if Redis down: log, continue history-only)
+3. Connect AMQP, declare topology (DLX first, then ingest queue)
+4. consume until SIGINT / SIGTERM
+
+If queue already exists without DLX:
+  docker compose exec rabbitmq rabbitmqctl delete_queue telemetry.ingest -p volta
+  restart worker  (test messages on that queue are dropped)
+
+----------------------------------------
+C) WEBSOCKET SESSION
+----------------------------------------
+1. Check Origin against CORS_ORIGINS
+2. accept()
+3. Validate household_id regex
+4. decode access JWT, load User from Neon
+5. send hello
+6. send latest snapshot if Redis/Timescale has one
+7. parallel tasks: Redis subscribe | heartbeat ping | client close watch
+8. on disconnect: cancel tasks, unsubscribe
+
+----------------------------------------
+D) HTTP INGEST (pytest / leftover)
+----------------------------------------
+1. require_ingest_token (constant-time compare of SHA-256 digests)
+2. FastAPI validates TelemetryRecord
+3. EnergyService.ingest -> normalize -> in-memory store
+4. If TELEMETRY_IO_ENABLED, also Timescale + Redis (off in pytest)
+
+Lifespan refuse to boot when ENVIRONMENT=production and:
+  INGEST_TOKEN is still the documented default
+  OR INGEST_HTTP_ENABLED is still true
+
+----------------------------------------
+E) READ FALLBACK CHAIN
+----------------------------------------
+latest:   Redis -> Timescale -> memory store -> 404 EnergyNotFound
+history:  Timescale last N if any rows, else memory
+daily/hourly: Timescale time range if configured, else filter memory
+
+pytest sets TELEMETRY_IO_ENABLED=false so leftover Docker rows
+cannot leak into GET /history assertions.
+
+================================================================================
+7. SECURITY CHECKLIST
+================================================================================
+
+[ ] Simulator does not hold Timescale or Redis credentials
+[ ] Production AMQP: publish-only user vs consume user, TLS amqps://
+[ ] Persistent messages + durable queue
+[ ] ACK only after Timescale upsert
+[ ] Schema failures -> DLQ, not infinite requeue
+[ ] Balance warning is not a DLQ reason
+[ ] WS: access JWT + origin allow-list + household regex
+[ ] REST energy GETs: Bearer access token (auth.txt)
+[ ] Neon DATABASE_URL never pointed at telemetry_ticks
+[ ] INGEST_HTTP_ENABLED=false in production
+[ ] CORS explicit list, never "*"
+[ ] One local worker process (two consumers + an old binary that ACKs
+    without writing will "lose" ticks)
+[ ] Secrets in .env, not committed
+
+================================================================================
+8. CONFIG (NO CODE CHANGE TO SWITCH HOSTING)
+================================================================================
+
+Already present (auth):
+  DATABASE_URL / DB_SSL_REQUIRED     Neon users
+  JWT_SECRET_KEY                     signs REST + WS
+  GOOGLE_*                           login only
+
+Simulator
+  RABBITMQ_URL                       empty = disabled
+  RABBITMQ_EXCHANGE                  telemetry
+  RABBITMQ_ROUTING_KEY               telemetry.ingest
+  HOUSEHOLD_ID                       home_001
+
+Backend
+  TIMESCALE_DATABASE_URL             asyncpg URL, port 5433 locally
+  TIMESCALE_SSL_REQUIRED             false local, true cloud
+  TIMESCALE_COMPRESS_AFTER_DAYS      7
+  TIMESCALE_RETENTION_DAYS           90
+  REDIS_URL                          redis:// local, rediss:// cloud
+  REDIS_KEY_PREFIX                   volta:live:
+  REDIS_LIVE_TTL_SECONDS             120
+  RABBITMQ_URL / QUEUE / DLX / DLQ / PREFETCH
+  WS_PATH                            /ws/energy
+  WS_HEARTBEAT_SECONDS               30
+  INGEST_HTTP_ENABLED                true dev, false prod
+  TELEMETRY_IO_ENABLED               true app, false pytest
+  CORS_ORIGINS                       include http://127.0.0.1:8765
+
+Local ports (docker compose):
+  5672 / 15672   RabbitMQ + management UI (volta / volta)
+  5433           Timescale  (not 5432 — leave that for other Postgres)
+  6379           Redis
+
+Cloud later = same keys, TLS URLs. Code does not change.
+
+================================================================================
+9. RUN, CHECK, STOP
+================================================================================
+
+Start (four processes):
+
+  docker compose up -d
+  cd backend && source venv/bin/activate
+  python -m app.workers.ingest
+  uvicorn main:app --reload
+  # repo root
+  python -m simulator.main --rabbitmq-url amqp://volta:volta@localhost:5672/volta \
+      --weather-mode live --dashboard --quiet
+
+Live clock = omit --start-time, --ticks, --speed 0.
+--dashboard forces 1 reading per real second.
+
+Prove the pipe:
+
+  rabbitmqctl list_queues -p volta name messages_ready consumers
+      ingest ready=0  consumers=1
+
+  psql -U volta -d volta_ts  -c "SELECT count(*) FROM telemetry_ticks;"
+
+  redis-cli GET volta:live:home_001
+
+  curl -s http://127.0.0.1:8000/ready
+
+  POST /auth/login  then
+  GET  /energy/home_001/live   Authorization: Bearer <access_token>
+
+  Browser chip "Live · backend" + Network WS to :8000
+
+Stop worker: only backend UI freezes. Simulator :8765 keeps moving.
+
+Stop:
+  Ctrl+C worker and uvicorn
+  docker compose stop          keeps volumes
+  docker compose down -v       wipes queues and ticks
+
+================================================================================
+10. TESTING
+================================================================================
+
+Simulator  pytest simulator/tests
+  persistent JSON message
+  broker-down publish does not raise
+
+Backend    TELEMETRY_IO_ENABLED=false  (set in tests/conftest.py)
+  pipeline: ack / empty / invalid JSON / negative kW / import+export
+  unbalanced tick => ack + warning
+  record_to_params <-> payload_to_record
+  Redis key and channel names
+  WS invalid token => error; patched user => hello
+  HTTP energy tests stay on the in-memory store
+
+No pytest against live Timescale (dirty history rows).
+
+================================================================================
+11. TRADE-OFFS (EXPECT THESE QUESTIONS)
+================================================================================
+
+Q: Why RabbitMQ, not HTTP ingest, in production?
+A: Different uptime. Queue absorbs bursts and worker restarts.
+   HTTP ties the generator to API health and rate limits.
+
+Q: Why not declare the queue on the simulator?
+A: Publisher owns the exchange. Consumer owns queue arguments (DLX).
+   Two declares with different args => PRECONDITION_FAILED.
+
+Q: Why ACK after Timescale, not after Redis?
+A: Timescale is durable history. Redis is a cache. History loss is
+   worse than a one-tick live gap.
+
+Q: Why ACK a balance warning?
+A: Same as HTTP 202. A 0.06 kW rounding error must not stall the home.
+
+Q: Why Timescale, not Neon?
+A: Hypertables, compression, retention. Separate failure domain from login.
+
+Q: Why Redis and Timescale together?
+A: Redis = latest + pub/sub across API replicas. Timescale = months of ticks.
+   One store cannot do both well.
+
+Q: Why not consume inside FastAPI lifespan?
+A: Reload and multi-worker uvicorn would steal or duplicate consumes.
+   Ingest load scales independently of HTTP.
+
+Q: At-least-once or exactly-once?
+A: At-least-once (requeue on Timescale error). Idempotent upsert makes
+   duplicates safe.
+
+Q: Why query-string JWT on WebSocket?
+A: Browsers cannot set Authorization on the WS handshake. Origin check
+   + short-lived access token is the trade-off. Token still must not be
+   logged. Prefer a cookie later if the SPA is same-site.
+
+Q: Why do both dashboards show the same kW?
+A: One generator, two readers. Stop the worker: only backend freezes.
+
+Q: How does React plug in?
+A: Same WS and REST. Hold the access token, onmessage => setState(record).
+   No worker or schema change.
+
+Q: Why in-memory store still exists?
+A: Pytest and HTTP ingest without Docker. Production reads Redis/Timescale.
+
+================================================================================
+12. ONE-MINUTE ELEVATOR PITCH
+================================================================================
+
+"The simulator is only a generator. It publishes one JSON tick to a
+RabbitMQ topic exchange. A worker process — not uvicorn — consumes the
+queue, validates the record, recomputes the energy-balance check, upserts
+a Timescale hypertable for history, updates Redis for the live snapshot
+and pub/sub, then ACKs. Timescale failure requeues; poison JSON goes to
+a DLQ; Redis failure does not block the ACK. The API serves JWT-protected
+REST history and a WebSocket so the dashboard, and later React, push live
+kW without polling. Auth stays on Neon. Telemetry never shares that
+database. HTTP ingest remains for tests."
+
+================================================================================
+13. CHEAT SHEET - OPEN THESE FILES
+================================================================================
+
+Architecture:             this file
+Brokers:                  docker-compose.yml
+Publisher:                simulator/clients/rabbitmq.py
+Loop:                     simulator/main.py
+Validate:                 backend/app/modules/energy/pipeline.py
+Normalize / reads:        backend/app/modules/energy/service.py
+Worker ACK policy:        backend/app/workers/ingest.py
+Hypertable:               backend/app/modules/energy/timescale_store.py
+Live + pub/sub:           backend/app/modules/energy/redis_live.py
+WebSocket:                backend/app/modules/energy/ws.py
+REST:                     backend/app/modules/energy/router.py
+Env:                      backend/app/core/config.py
+Lifespan /ready:          backend/app/main.py
+Two UI modes:             frontend/public/suryaa-dashboard.html
+JWT:                      docs/auth.txt
+Tick physics:             docs/simulator.txt
+
+================================================================================
+14. COMPLETE END-TO-END FLOW — EVERY TECHNOLOGY AND ITS ROLE
+================================================================================
+
+This section traces ONE solar-home tick from the moment a photon is
+measured to the moment a number changes on the live dashboard.
+Read this as a story. Each paragraph is one technology doing its job.
+
+--------------------------------------------------------------------------------
+STEP 1 — Simulator generates a tick
+Technology: Python (aio-pika, Pydantic, httpx)
+File: simulator/telemetry_generator.py + simulator/clients/rabbitmq.py
+--------------------------------------------------------------------------------
+
+The simulator is running with --dashboard --weather-mode live.
+Its clock fires once per second. TelemetryGenerator.step() is called.
+
+  Solar engine:   reads cached Open-Meteo GHI for the current hour.
+                  Applies cloud factor, temperature derate, shading.
+                  solar_power_kw = 2.14
+  Load engine:    base household load + active appliances.
+                  home_load_power_kw = 1.60
+  Battery engine: surplus solar charges the battery.
+                  battery_charge_power_kw = 0.54
+  Energy balance: solar 2.14 = home 1.60 + charge 0.54. Valid.
+  Output:         TelemetryRecord (Pydantic model) as JSON.
+
+The generator hands the record to RabbitMQPublisher.publish().
+  - Calls channel.declare_exchange("telemetry", topic, durable=True)
+    — only the exchange, never the queue.
+  - Creates an AMQP Message: body = JSON bytes, delivery_mode = PERSISTENT,
+    headers = { household_id, data_source }.
+  - exchange.publish(message, routing_key="telemetry.ingest")
+  - Waits for a publisher confirm from the broker (channel acks the publish).
+
+If the broker is down: _note_failure() logs a warning. Generator keeps running.
+The tick still prints to the local dashboard SSE stream.
+
+Role of Python here: compute (physics engines) + async I/O (aio-pika).
+
+--------------------------------------------------------------------------------
+STEP 2 — RabbitMQ buffers the message
+Technology: RabbitMQ 3.13 (AMQP 0-9-1 protocol)
+Files: docker-compose.yml, backend/app/workers/ingest.py (topology)
+--------------------------------------------------------------------------------
+
+RabbitMQ receives the persistent JSON on exchange "telemetry".
+It routes the message using the routing key "telemetry.ingest" to the
+durable queue "telemetry.ingest" (bound by the worker at startup).
+
+Why a queue and not a direct HTTP call?
+
+  Simulator        Worker
+  publishes at     consumes at          If HTTP: worker restart = ticks lost.
+  1 Hz always   →  its own pace    →   If queue: ticks wait safely.
+
+Queue properties that matter:
+  durable = true            survives broker restart
+  x-dead-letter-exchange    = "telemetry.dlx"
+  persistent messages       survive broker restart (delivery_mode=2)
+
+Role of RabbitMQ here: decoupling, durability, back-pressure relief,
+dead-letter routing for poison messages.
+
+Visual state of the queue at this moment:
+
+  telemetry.ingest
+  ┌────────────────────────────────┐
+  │  tick 19:35:01  (unread)       │
+  │  tick 19:35:02  (unread)       │  ← messages_ready = N
+  │  ...                           │
+  └────────────────────────────────┘
+        ▲ being delivered to
+        └── worker consumer (consumers = 1)
+
+--------------------------------------------------------------------------------
+STEP 3 — Ingest worker validates the tick
+Technology: Python (aio-pika consumer, Pydantic v2)
+File: backend/app/workers/ingest.py + backend/app/modules/energy/pipeline.py
+--------------------------------------------------------------------------------
+
+The worker called await queue.consume(_on_message) at startup.
+prefetch_count = 50 means at most 50 messages are in-flight at once.
+
+_on_message(message) runs:
+
+  pipeline.process_telemetry_body(message.body, tolerance_kw=0.05)
+
+Inside pipeline.py:
+  1. json.loads(body)            if fail → reject to DLQ
+  2. TelemetryRecord.model_validate(payload)
+       - negative kW?            → ValidationError → reject to DLQ
+       - import AND export > 0?  → ValidationError → reject to DLQ
+  3. normalize_record()
+       - fill missing interval kWh from power × interval_hours
+       - recompute AC-bus check  (producer cannot self-certify)
+       - if |error| > 0.05 kW   → energy_balance_status = "warning"
+                                   still ACK'd (same as HTTP 202)
+  4. return IngestDecision(action="ack", record=normalized_record)
+
+The worker itself never touches the network in pipeline.py.
+Pydantic does the validation in pure Python. No Docker dependency in tests.
+
+Role of the worker: be the last gatekeeper. If the simulator emits a bug
+(negative power, import+export simultaneously), the worker catches it here,
+not inside the live database.
+
+--------------------------------------------------------------------------------
+STEP 4 — TimescaleDB stores history (durable write)
+Technology: TimescaleDB 2.x (PostgreSQL 16 + time-series extension)
+File: backend/app/modules/energy/timescale_store.py
+--------------------------------------------------------------------------------
+
+await timescale.upsert(record)
+
+SQL (simplified):
+
+  INSERT INTO telemetry_ticks
+    (time, household_id, payload, solar_power_kw, ...)
+  VALUES (:time, :household_id, :json_payload, :solar_kw, ...)
+  ON CONFLICT (household_id, time)
+  DO UPDATE SET payload = EXCLUDED.payload, ...
+
+Why ON CONFLICT?
+  At-least-once delivery means the worker might re-deliver the same tick
+  (Timescale write succeeded but the connection dropped before ACK).
+  The upsert absorbs the duplicate harmlessly.
+
+Why separate from Neon (the auth database)?
+  Neon → OLTP (users, tokens, onboarding, tiny rows, fast primary-key lookups)
+  Timescale → append-mostly, time-ordered, ~86 400 rows/day, compress+retain
+
+  Compression (after 7 days):
+    Old chunks are recompressed into columnar format.
+    storage drops ~90 %. Queries still work.
+
+  Retention (90 days):
+    Chunks older than 90 days are dropped automatically.
+    No manual cron job.
+
+  Hypertable:
+    To the app it looks like a normal Postgres table.
+    Timescale transparently partitions it by time so queries like
+    "give me today's rows for home_001" skip months of old data.
+
+Primary key (household_id, time) keeps queries fast per home.
+Denormalized kW columns allow cheap aggregates without parsing JSONB.
+JSONB payload column stores the full record so new fields are readable
+without ALTER TABLE.
+
+The worker does NOT ACK yet. If this INSERT throws, the message is
+nacked and requeued so no tick is silently lost.
+
+Role of TimescaleDB here: permanent, queryable, compressed time-series diary.
+
+--------------------------------------------------------------------------------
+STEP 5 — Redis holds the live snapshot and fans it out
+Technology: Redis 7 (pub/sub + key-value)
+File: backend/app/modules/energy/redis_live.py
+--------------------------------------------------------------------------------
+
+await redis.set_and_publish(record)
+
+Two operations in one call:
+
+  SET   volta:live:home_001  <json>  EX 120
+  PUBLISH volta:live:ch:home_001  <json>
+
+SET (snapshot):
+  Any client can GET the latest tick in O(1) without touching Timescale.
+  TTL 120 s means if the simulator stops, the key disappears in 2 minutes
+  instead of the UI showing 3-hour-old "live" data.
+
+PUBLISH (fan-out):
+  If the API runs as 3 uvicorn workers behind a load-balancer, Worker A
+  handles WebSocket client 1 and Worker B handles WebSocket client 2.
+  Both workers subscribed to this channel. Both receive the JSON in the
+  same publish call and push it to their clients simultaneously.
+  Without pub/sub, a tick published by ingest only reaches one API replica.
+
+Redis failure:
+  try / except logs the error. The message is still ACK'd because
+  Timescale already has the row. The live snapshot will be rebuilt
+  from Timescale on the next GET /live, or repaired when the next
+  tick arrives and Redis is back.
+
+Now the worker calls message.ack().
+
+Role of Redis here: ultra-fast latest snapshot + broadcast channel so
+multi-replica deployments push the same live tick to every open WebSocket.
+
+ACK happens only here — AFTER both stores are handled.
+
+--------------------------------------------------------------------------------
+STEP 6 — FastAPI WebSocket pushes to the browser
+Technology: FastAPI + Starlette WebSocket + asyncio + Redis subscriber
+File: backend/app/modules/energy/ws.py
+--------------------------------------------------------------------------------
+
+The browser opened:
+  ws://127.0.0.1:8000/ws/energy?token=<access_jwt>&household_id=home_001
+
+At connect time (one-off setup):
+  1. Origin header checked against CORS_ORIGINS.
+  2. WebSocket.accept() — TCP handshake complete.
+  3. household_id validated (regex).
+  4. JWT decoded (type=access, exp not reached).
+  5. User loaded from Neon — must be active.
+  6. Send { type: "hello", household_id, user_id }
+  7. Send latest snapshot from Redis (or Timescale) if any.
+
+Ongoing (three asyncio tasks run in parallel):
+
+  _heartbeat()
+      every 30 s: send { type: "ping" }
+      keeps the connection alive through proxies/load-balancers
+      that close idle TCP connections
+
+  _pump_redis()
+      subscribes to channel  volta:live:ch:home_001
+      for each PUBLISH from the ingest worker:
+        parse JSON → TelemetryRecord
+        send { type: "telemetry", record: {...}, live: {...} }
+      if Redis goes down: stop.is_set() → closes the WS
+
+  _client_watch()
+      reads text from the browser
+      "close" or disconnect → stop.is_set()
+
+When stop is set: cancel all tasks, unsubscribe, close.
+
+Why not HTTP long-polling?
+  Long-polling opens a new HTTP request for every tick.
+  At 1 Hz that is 3 600 requests/hour per client. WebSocket
+  keeps one TCP connection open and writes frames, which is
+  orders of magnitude more efficient.
+
+Why not Server-Sent Events (SSE) for the product?
+  SSE is what the simulator dashboard does (port 8765).
+  It is fine for one direction, but WebSocket is bidirectional
+  (the browser can send "close" or future control messages)
+  and is a standard choice when both directions may be needed.
+
+Why JWT in query string (not Authorization header)?
+  The WebSocket API in browsers cannot set custom headers on the
+  initial handshake. Query-string token is the standard workaround.
+  Access tokens are short-lived (15 min) so the exposure window is small.
+
+Role of WebSocket here: real-time push of every ingest tick to the
+browser with one persistent TCP connection per client.
+
+--------------------------------------------------------------------------------
+STEP 7 — Dashboard renders the data
+Technology: JavaScript (vanilla today, React later)
+File: frontend/public/suryaa-dashboard.html
+--------------------------------------------------------------------------------
+
+applyTelemetry(msg.record) runs whenever a "telemetry" frame arrives.
+
+The function reads record fields and writes them to the DOM:
+  $("solarKw").textContent      = "2.14"
+  $("socPct").textContent       = "62.4%"
+  $("batteryStatus").textContent= "charging"
+  SOC ring SVG stroke offset updates (progress arc)
+  Historical mini-charts redraw (last 60 readings)
+  Device table refreshes
+
+This is one function call per tick — no polling, no XHR.
+
+URL switch (same file, different pipe):
+
+  no query             EventSource /api/stream  →  simulator SSE
+  source=backend&...   WebSocket   ws://:8000   →  ingest pipeline
+
+React later: same WebSocket, same record fields, setState(msg.record).
+applyTelemetry logic moves into a React component. Pipeline is unchanged.
+
+--------------------------------------------------------------------------------
+TECHNOLOGY ROLE SUMMARY TABLE
+--------------------------------------------------------------------------------
+
+Technology     Role in this pipeline                         Port / URL
+─────────────  ──────────────────────────────────────────   ────────────────
+Simulator      Generates one JSON tick per interval.         (publisher, no server)
+               Physics engines (solar/battery/grid/load).
+               Publishes to AMQP exchange only.
+
+aio-pika       Async AMQP 0-9-1 client.                     (library)
+               Publisher confirms on simulator side.
+               Durable consumer on worker side.
+
+RabbitMQ       Persistent buffer between generator and       :5672 AMQP
+               worker. Routes, stores, dead-letters.         :15672 Mgmt UI
+               Decouples uptime of generator vs worker.
+
+Python worker  Consumes queue. Validates. Writes Timescale.  (process, no HTTP)
+(app.workers)  Updates Redis. ACKs only after Timescale OK.
+
+Pydantic v2    Schema + range validation. Rejects poison.    (library)
+               normalize_record fills kWh, recomputes balance.
+
+TimescaleDB    Time-series history. Hypertable compression.  :5433 (asyncpg)
+               Retention policies. ON CONFLICT idempotent.   DB volta_ts
+
+Redis 7        Latest snapshot (GET O(1), TTL auto-stale).   :6379
+               pub/sub fan-out across API replicas.          key volta:live:{id}
+               WS works on any API instance, not just one.   ch volta:live:ch:{id}
+
+FastAPI        REST /energy/* (pull, charts, first paint).   :8000
+(uvicorn)      WS /ws/energy  (push, live update).
+               JWT decode + Neon user lookup on WS connect.
+               GET /ready pings both stores.
+
+Starlette WS   WebSocket framing, async tasks, heartbeat.    (framework)
+
+Neon Postgres  Auth DB: users, tokens, onboarding.           ssl (cloud)
+               Only touched by the WS JWT verification.
+               Never holds telemetry rows.
+
+HTML/JS        Renders record fields. Two URL modes.         :8765 (sim dash)
+               React later: same WS + setState.              or file://
+
+JWT            Stateless user identity on REST + WS.         Bearer header / ?token=
+               Issued by auth service, decoded by API.       15 min expiry
+
+RabbitMQ DLX   Dead-letter exchange for poison messages.     queue telemetry.ingest.dead
+               Never retry bad JSON or schema violations.
+
+--------------------------------------------------------------------------------
+WHY WEBSOCKET SPECIFICALLY IN THIS FLOW
+--------------------------------------------------------------------------------
+
+The ingest pipeline produces one tick per second. The dashboard must
+update in near-real-time. Here are the options and why WebSocket wins:
+
+  OPTION            Frequency at 1 Hz      Connection cost        Direction
+  Polling (fetch)   1 HTTP request/s/tab   high (TCP + headers)   pull only
+  SSE               1 frame/s              1 connection, push     server→client only
+  WebSocket         1 frame/s              1 connection, push+pull bidirectional
+
+WebSocket is chosen because:
+
+  1. One persistent TCP connection.
+     No repeated HTTP overhead per tick.
+
+  2. Server-initiated push.
+     Redis PUBLISH triggers the push instantly. No poll delay.
+
+  3. Bidirectional.
+     Browser can send "close" or future control messages.
+
+  4. Works with Redis pub/sub fan-out.
+     Any API replica subscribes the same Redis channel.
+     All connected clients see the tick regardless of which
+     API worker they are connected to.
+
+  5. React ready.
+     new WebSocket(url) is two lines. No extra library.
+
+The simulator dashboard uses SSE (EventSource) because it is simpler
+for a single-process, single-client debug tool with no auth.
+The product uses WebSocket because it needs auth, multi-replica, and
+bidirectional potential.
+
+Flow of one tick through WebSocket specifically:
+
+  Redis PUBLISH volta:live:ch:home_001  {json}
+       │
+       ▼
+  ws.py _pump_redis() yields the JSON string
+       │
+       ▼
+  TelemetryRecord.model_validate_json(body)
+       │
+       ▼
+  websocket.send_json({
+    "type": "telemetry",
+    "record": record.model_dump(mode="json"),  ← raw fields
+    "live":   to_live(record)...               ← nested view
+  })
+       │
+       ▼
+  Browser onmessage → applyTelemetry(msg.record)
+       │
+       ▼
+  DOM update (solarKw, socPct, SOC ring arc, device table, mini-chart)
+
+Heartbeat prevents the browser from seeing a silent dead socket:
+  every 30 s: server → { type: "ping" }
+  browser ignores it (no pong required in this protocol)
+  proxy keepalive timers are satisfied
+
+================================================================================
+END OF TELEMETRY INGEST REVISION NOTES
+================================================================================
+Here is the plain-English explanation of what each one does and why both are needed at the same time.
+
+---
+
+## Think of it as Two Different Jobs
+
+Imagine a smart home energy monitor. Two people are working in the background:
+
+- **TimescaleDB** = the **Accountant** — writes everything down permanently in a ledger
+- **Redis** = the **Notice Board** — pins the latest update where everyone can see it instantly
+
+---
+
+## TimescaleDB — The Accountant (Long-term memory)
+
+**What it stores:** Every single tick, forever (up to 90 days by default).
+
+**The simple story:**
+
+> Every second, the worker gets a tick from RabbitMQ.
+> It walks to the accountant's desk and says:
+> *"At 7:35:01 PM, home_001 produced 2.14 kW solar."*
+> The accountant writes it down in the ledger — one row per tick.
+
+That row never disappears (until the retention policy drops it after 90 days).
+
+**Why it matters for the dashboard:**
+- When you open the app at 8 PM, you want to see a chart of the **last 2 hours**.
+- TimescaleDB answers: *"Here are 7200 rows, one per second, for home_001."*
+- Redis cannot do this — it only remembers the **latest** value.
+
+**The clever trick — Hypertable:**
+TimescaleDB splits the table into hidden chunks by time period (e.g., one chunk per week). When you query "last 2 hours", it only opens the current chunk, not years of old data. This is why it stays fast even with millions of rows.
+
+**What happens on duplicate delivery (RabbitMQ re-sends a tick):**
+```
+ON CONFLICT (household_id, time) DO UPDATE SET ...
+```
+It just overwrites with the same value. No error, no duplicate row. Safe.
+
+---
+
+## Redis — The Notice Board (Real-time memory)
+
+**What it stores:** Only the **latest** tick for each home. One key per home.
+
+**The simple story:**
+
+> After the accountant writes the row, the worker walks to the notice board and does two things:
+>
+> 1. **Pins a new sticky note** — replaces the old one with the latest tick JSON.
+>    `SET volta:live:home_001  {json}  EX 120`
+>    (Auto-deletes in 120 seconds if no new tick arrives)
+>
+> 2. **Rings a bell** — PUBLISH event to a channel.
+>    `PUBLISH volta:live:ch:home_001  {json}`
+>    Every WebSocket connection listening to that bell instantly gets the JSON.
+
+**Why the sticky note (SET)?**
+When a new browser tab opens, it needs the current value *right now* — it cannot wait for the next tick. Redis answers in under 1 ms from the sticky note. TimescaleDB would need a full SQL query.
+
+**Why the bell (PUBLISH)?**
+Imagine 3 users have the dashboard open, and the API is running on 2 servers. User A is connected to Server 1, Users B and C are on Server 2. When a tick arrives at the ingest worker, it rings the bell once. **Both servers hear it** and push the tick to their connected users simultaneously. Without the bell, only one server would know about the new tick.
+
+---
+
+## How They Work Together — The Sequence
+
+```
+Simulator publishes tick
+        │
+        ▼
+RabbitMQ queues it (durable buffer)
+        │
+        ▼
+Worker picks it up → Pydantic validates
+        │
+        ├──► TimescaleDB.upsert()
+        │      Writes a permanent row
+        │      Used for: history charts, hourly/daily summaries
+        │
+        ├──► Redis.set_and_publish()
+        │      Pins latest value (sticky note, 120s TTL)
+        │      Rings the bell (pub/sub channel)
+        │      Used for: first-load snapshot, live push to WebSocket
+        │
+        └──► message.ack()   ← only AFTER both succeed
+```
+
+---
+
+## Why NOT just use one of them?
+
+| Question | Answer |
+|---|---|
+| Why not use TimescaleDB for live too? | SQL query takes ~5–50 ms. Redis answers in ~0.1 ms. At 1 tick/sec across many users, Timescale would get crushed. |
+| Why not use Redis for history too? | Redis lives in RAM. Storing 90 days × 86 400 ticks = millions of rows would cost a huge amount of memory and disappears on restart. |
+| Why not just use Redis pub/sub without the SET? | Because new users connecting mid-stream would get nothing until the next tick. The SET gives them an instant first value. |
+| Why not use TimescaleDB pub/sub? | Timescale does not have a native pub/sub channel. PostgreSQL LISTEN/NOTIFY exists but does not fan out across replicas like Redis does. |
+
+---
+
+## The TTL (Auto-expire) on Redis — Why it matters
+
+```
+SET volta:live:home_001  {json}  EX 120
+```
+
+If the simulator stops (power cut, crash), the sticky note disappears after 120 seconds. The dashboard will see **no live data** instead of stale 3-hour-old data labelled as "live". This is intentional — stale = misleading.
+
+---
+
+**One-line summary:**
+> **TimescaleDB** remembers everything forever so you can look back in time. **Redis** remembers only right now so the live dashboard is instant and every open browser tab gets the update in the same millisecond.

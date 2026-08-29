@@ -502,6 +502,49 @@
       };
     }
 
+    function connectBackendWs(opts) {
+      const wsUrl = new URL(opts.ws || "ws://127.0.0.1:8000/ws/energy");
+      wsUrl.searchParams.set("token", opts.token || "");
+      wsUrl.searchParams.set("household_id", opts.household || "home_001");
+      if (stopped) return;
+      const socket = new WebSocket(wsUrl.toString());
+      liveSource = socket;
+      socket.onopen = () => {
+        if (!stopped) setLive(true, "WS connecting");
+      };
+      socket.onmessage = (event) => {
+        if (stopped) return;
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (payload.type === "error") {
+          setLive(false, payload.code || "WS error");
+          return;
+        }
+        if (payload.type === "hello") {
+          setLive(true, "Live · " + (payload.household_id || "backend"));
+          return;
+        }
+        if (payload.type === "ping") return;
+        if (payload.type === "telemetry" && payload.record) {
+          setLive(true, "Live · backend");
+          applyTelemetry(payload.record);
+        }
+      };
+      socket.onerror = () => {
+        if (!stopped) setLive(false, "WS error");
+      };
+      socket.onclose = () => {
+        if (liveSource === socket) liveSource = null;
+        if (stopped) return;
+        setLive(false, "Reconnecting");
+        setTimeout(() => connectBackendWs(opts), 1500);
+      };
+    }
+
     async function pollLatest() {
       if (stopped) return;
       try {
@@ -524,7 +567,7 @@
       $("gpsBtn").disabled = true;
       $("locQuery").disabled = true;
       if (liveSource) {
-        liveSource.close();
+        if (typeof liveSource.close === "function") liveSource.close();
         liveSource = null;
       }
       if (pollTimer) window.clearTimeout(pollTimer);
@@ -632,7 +675,18 @@
     });
 
     requestGps({ silent: true });
-    loadHistory().then(connectLive);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("source") === "backend") {
+      $("emptyState").querySelector("p").textContent =
+        "Waiting for backend WebSocket telemetry.";
+      connectBackendWs({
+        ws: params.get("ws") || "ws://127.0.0.1:8000/ws/energy",
+        token: params.get("token") || "",
+        household: params.get("household") || "home_001",
+      });
+    } else {
+      loadHistory().then(connectLive);
+    }
   </script>
 </body>
 </html>

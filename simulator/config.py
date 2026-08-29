@@ -198,9 +198,15 @@ class SimulatorConfig(BaseSettings):
     output_file: str = "data/telemetry.jsonl"
     speed: float = 1.0
 
-    # Optional FastAPI ingest. Empty URL disables publishing.
+    # Optional FastAPI HTTP ingest (dev/tests). Empty URL disables it.
     ingest_url: str = ""
     ingest_token: str = ""
+
+    # RabbitMQ publisher (backend ingest pipeline). Empty URL disables it.
+    rabbitmq_url: str = ""
+    rabbitmq_exchange: str = "telemetry"
+    rabbitmq_routing_key: str = "telemetry.ingest"
+    rabbitmq_publish_timeout_seconds: float = 3.0
 
     open_meteo_base_url: str = "https://api.open-meteo.com/v1/forecast"
     open_meteo_forecast_days: int = 7
