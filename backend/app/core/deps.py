@@ -43,6 +43,7 @@ __all__ = [
     "get_oauth_service",
     "get_google_oauth_client",
     "get_current_user",
+    "get_current_user_optional",
 ]
 
 
@@ -114,4 +115,38 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise InvalidTokenError()
 
+    return user
+
+
+async def get_current_user_optional(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    x_access_token: str | None = Header(
+        default=None,
+        alias="X-Access-Token",
+        description="Optional access token (ignored when X-Ingest-Token is used)",
+    ),
+    user_repo: UserRepository = Depends(get_user_repository),
+) -> User | None:
+    """
+    Same token sources as get_current_user, but missing/invalid tokens return
+    None instead of 401. Used by dual-auth routes (user JWT OR ingest token).
+    """
+    raw_authorization = request.headers.get("authorization")
+    raw_token = _extract_raw_token(credentials, raw_authorization, x_access_token)
+    if not raw_token:
+        return None
+    try:
+        payload = decode_token(raw_token)
+    except jwt.PyJWTError:
+        return None
+    if payload.get("type") != TokenType.ACCESS:
+        return None
+    try:
+        user_id = uuid.UUID(payload["sub"])
+    except (KeyError, ValueError):
+        return None
+    user = await user_repo.get_by_id(user_id)
+    if user is None or not user.is_active:
+        return None
     return user

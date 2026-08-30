@@ -229,19 +229,37 @@ Postgres in production and SQLite in tests. Google OAuth tests use a fake
 | GET    | `/auth/google/callback`       | -           | exchanges code, logs in/links/creates |
 | POST   | `/auth/google/link-confirm`   | -           | completes linking an unverified-email Google identity |
 | POST   | `/energy/ingest`              | X-Ingest-Token | simulator tick; 202 + normalized record |
-| GET    | `/energy/{id}/live`           | Bearer JWT  | dashboard snapshot (solar, load, battery, grid, devices, weather) |
-| GET    | `/energy/{id}/battery`        | Bearer JWT  | latest battery status |
+| GET    | `/onboarding/homes`            | Bearer JWT  | list every home for this login |
+| POST   | `/onboarding/homes`            | Bearer JWT  | add another home (first home is primary) |
+| POST   | `/onboarding/homes/{id}/primary` | Bearer JWT | make this home the default for `/energy/me/*` |
+| GET    | `/energy/me/homes`             | Bearer JWT  | same home list as `/onboarding/homes` |
+| GET    | `/energy/me/live`             | Bearer JWT  | live snapshot for the primary home (`?household_id=` to pick another) |
+| GET    | `/energy/me/daily`            | Bearer JWT  | daily kWh totals for the caller's household |
+| GET    | `/energy/me/profile`          | Bearer JWT  | simulator knobs derived from onboarding |
+| GET    | `/energy/onboarding-profiles` | X-Ingest-Token | all completed homes (simulator discovery) |
+| GET    | `/energy/{id}/live`          | Bearer JWT  | dashboard snapshot; household must belong to the caller |
+| GET    | `/energy/{id}/battery`       | Bearer JWT  | latest battery status |
 | GET    | `/energy/{id}/grid`           | Bearer JWT  | latest grid status |
 | GET    | `/energy/{id}/devices`        | Bearer JWT  | latest appliance readings |
-| GET    | `/energy/{id}/weather`        | Bearer JWT  | weather used for the latest tick |
-| GET    | `/energy/{id}/history`        | Bearer JWT  | recent ticks from the in-memory ring buffer |
+| GET    | `/energy/{id}/weather`       | Bearer JWT  | weather used for the latest tick |
+| GET    | `/energy/{id}/history`        | Bearer JWT  | recent ticks |
 | GET    | `/energy/{id}/daily`          | Bearer JWT  | daily kWh totals (`?date=YYYY-MM-DD`) |
 | GET    | `/energy/{id}/hourly`         | Bearer JWT  | 24 hourly kWh buckets for one date |
+| GET    | `/energy/{id}/profile`        | JWT or X-Ingest-Token | onboarding → simulator knobs |
 
-Ingest is **not** a user JWT — the simulator sends `X-Ingest-Token` matching `INGEST_TOKEN` in `.env`. Live/summary routes reuse `get_current_user`. State is in-memory (process restart clears it). Point the simulator at the API with:
+Point the simulator at the API. With RabbitMQ or `--from-onboarding` and no `--household-id`, it loads **every** completed home so `/energy/me/live` works from the login token alone:
 
 ```bash
-python -m simulator.main --ingest-url http://127.0.0.1:8000 --ingest-token dev-ingest-token --weather-mode fallback --ticks 5 --speed 0
+python -m simulator.main --rabbitmq-url amqp://volta:volta@localhost:5672/volta \
+  --weather-mode live --dashboard --quiet
+```
+
+One home only:
+
+```bash
+python -m simulator.main --from-onboarding --household-id home_abc123def456 \
+  --ingest-url http://127.0.0.1:8000 --ingest-token dev-ingest-token \
+  --weather-mode fallback --ticks 5 --speed 0
 ```
 
 All errors use the shape:

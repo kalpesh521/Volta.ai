@@ -3,7 +3,7 @@ SQLAlchemy ORM models for onboarding.
 
 Tables
 ──────
-solar_systems     — one per user; stores panel, inverter, and onboarding state
+solar_systems     — one per home; a user may own many; one is_primary
 battery_configs   — one per system; only created for Off-grid / Hybrid
 grid_configs      — one per system; only created for On-grid / Hybrid
 tracked_appliances— many per system; the selected appliance catalog entries
@@ -30,6 +30,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.core.types import GUID
+from app.modules.onboarding.household import generate_household_id
 from app.modules.onboarding.enums import (
     ApplianceKey,
     BackupHours,
@@ -49,14 +50,20 @@ class SolarSystem(Base):
     """
     Central record for a user's solar installation.
     Created in Step 1 (system + inverter); updated on subsequent steps.
-    One-to-one with User via the UNIQUE constraint on user_id.
+    A user may own many homes; exactly one should be is_primary.
     """
     __tablename__ = "solar_systems"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Telemetry / simulator key. Unique across users; assigned once, never rotated.
+    household_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True, default=generate_household_id
+    )
+    # One primary home per user. /energy/me/* and token-only dashboard URLs use this.
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # ── Step 1: Solar panel info ─────────────────────────────────────────────
     panel_type: Mapped[str] = mapped_column(String(20), nullable=False)

@@ -32,11 +32,14 @@ Ingest worker (from `backend/`, after compose is up):
 python -m app.workers.ingest
 ```
 
-Live dashboard over backend WebSocket (API + worker running):
+Live dashboard over backend WebSocket (API + worker + simulator running).
+The login token is enough — the API binds it to the user's primary home:
 
 ```text
-http://127.0.0.1:8765/?source=backend&token=ACCESS_JWT&household=home_001
+http://127.0.0.1:8765/?source=backend&token=ACCESS_JWT
 ```
+
+Optional `&household=home_…` switches to a non-primary home. Do not put `home_001` in the URL.
 
 ## Backend
 

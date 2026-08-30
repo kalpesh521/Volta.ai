@@ -245,6 +245,20 @@ class TelemetryRecord(ExtensibleModel):
         return self
 
 
+class HomeLocationOut(BaseModel):
+    """Place used for weather/solar. From onboarding, then geocoded."""
+
+    name: str | None = None
+    label: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    timezone: str | None = None
+    admin1: str | None = None
+    country: str | None = None
+    query: str | None = None
+    source: str | None = None
+
+
 class LiveEnergyOut(BaseModel):
     household_id: str
     timestamp: datetime
@@ -257,6 +271,7 @@ class LiveEnergyOut(BaseModel):
     flows: EnergyFlows
     devices: list[DeviceReading]
     weather: WeatherRecord | None
+    location: HomeLocationOut | None = None
     energy_balance_status: str
     energy_balance_error_kw: float
     energy_balance_valid: bool
@@ -312,3 +327,43 @@ class HourlySummaryOut(BaseModel):
     date: date
     timezone: str
     buckets: list[HourlyBucketOut]
+
+
+class SimulatorDeviceSpec(BaseModel):
+    """One appliance the simulator should run. Shape matches DEVICE_CATALOG_JSON."""
+
+    model_config = ConfigDict(extra="allow")
+
+    device_id: str
+    device_name: str
+    device_type: str
+    rated_power_kw: float = Field(ge=0)
+    critical: bool = False
+    controllable: bool = True
+    schedule: dict[str, Any] = Field(default_factory=dict)
+
+
+class SimulatorProfileOut(BaseModel):
+    """Onboarding → generator knobs. Fetched by the simulator at startup."""
+
+    household_id: str
+    system_type: str
+    panel_type: str
+    panel_qty: int
+    solar_capacity_kwp: float
+    inverter_capacity_kw: float
+    battery_present: bool
+    battery_capacity_kwh: float
+    battery_usable_capacity_kwh: float
+    battery_minimum_soc_percent: float
+    battery_max_charge_power_kw: float
+    battery_max_discharge_power_kw: float
+    grid_available: bool
+    zero_export_mode: bool
+    location: str | None = None
+    devices: list[SimulatorDeviceSpec] = Field(default_factory=list)
+    schema_version: str = "1.0.0"
+
+
+class SimulatorProfileListOut(BaseModel):
+    profiles: list[SimulatorProfileOut]

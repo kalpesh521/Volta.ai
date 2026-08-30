@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -101,6 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         help="AMQP URL, e.g. amqp://volta:volta@localhost:5672/volta (empty = disabled)",
     )
+    parser.add_argument(
+        "--from-onboarding",
+        action="store_true",
+        help="Load solar/battery/grid/devices from completed onboarding "
+        "(all homes, or one --household-id)",
+    )
+    parser.add_argument(
+        "--api-url",
+        type=str,
+        help="Backend base URL for onboarding profiles (default: --ingest-url, then :8000/:8001)",
+    )
     return parser
 
 
@@ -143,8 +155,144 @@ def apply_cli_overrides(config: SimulatorConfig, args: argparse.Namespace) -> Si
         updates["ingest_token"] = args.ingest_token
     if args.rabbitmq_url:
         updates["rabbitmq_url"] = args.rabbitmq_url
+    if args.from_onboarding:
+        updates["from_onboarding"] = True
+    if args.api_url:
+        updates["backend_url"] = args.api_url
     merged = config.model_copy(update=updates)
     return apply_scenario(merged, merged.scenario)
+
+
+def _candidate_api_urls(config: SimulatorConfig) -> list[str]:
+    from simulator.clients.profile import resolve_api_base
+
+    urls: list[str] = []
+    for raw in (
+        config.backend_url,
+        config.ingest_url,
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8001",
+    ):
+        cleaned = (raw or "").strip()
+        if not cleaned:
+            continue
+        base = resolve_api_base(cleaned)
+        if base not in urls:
+            urls.append(base)
+    return urls
+
+
+def _ingest_token(config: SimulatorConfig) -> str:
+    return (
+        config.ingest_token.strip()
+        or os.environ.get("INGEST_TOKEN", "").strip()
+        or "dev-ingest-token"
+    )
+
+
+async def load_onboarding_configs(
+    config: SimulatorConfig,
+    *,
+    household_from_cli: bool,
+    log: bool = True,
+) -> list[SimulatorConfig]:
+    """
+    When publishing ticks (or --from-onboarding), pull completed homes from
+    the API so GET /energy/me/live works with a login token only.
+
+    --household-id  → that home only
+    otherwise        → every completed home
+    """
+    publishing = bool(config.rabbitmq_url.strip() or config.ingest_url.strip())
+    if not config.from_onboarding and not publishing:
+        return [config]
+
+    from simulator.clients.profile import ProfileClient
+    from simulator.profile import apply_onboarding_profile
+
+    token = _ingest_token(config)
+    last_error: Exception | None = None
+    profiles: list[dict] = []
+    used_base = ""
+    for base in _candidate_api_urls(config):
+        client = ProfileClient(base, token)
+        try:
+            if household_from_cli:
+                profiles = [await client.fetch(config.household_id)]
+            else:
+                profiles = await client.fetch_all()
+            used_base = base
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.warning("onboarding profiles unavailable at %s: %s", base, exc)
+        finally:
+            await client.aclose()
+
+    if not profiles:
+        if config.from_onboarding and last_error is not None:
+            raise SystemExit(f"failed to load onboarding profiles: {last_error}") from last_error
+        if last_error is not None:
+            logger.warning("continuing with CLI household_id=%s", config.household_id)
+        return [config]
+
+    configs = [apply_onboarding_profile(config, profile) for profile in profiles]
+    if log:
+        logger.info(
+            "Loaded %s onboarding profile(s) from %s",
+            len(profiles),
+            used_base,
+        )
+        for item in configs:
+            logger.info(
+                "Onboarding profile household=%s solar_kwp=%s inverter_kw=%s "
+                "battery_kwh=%s devices=%s",
+                item.household_id,
+                item.solar_capacity_kwp,
+                item.inverter_capacity_kw,
+                item.battery_capacity_kwh,
+                len(item.device_catalog()),
+            )
+    return configs
+
+
+async def prepare_home_config(item: SimulatorConfig):
+    from simulator.dashboard import location_state
+    from simulator.clients.geocoding import GeocodingClient, apply_location
+
+    if item.geocode_on_start:
+        location = await GeocodingClient(item).resolve(item.location_name)
+        item = apply_location(item, location)
+        location_state.current_location = location
+        logger.info("Home location %s: %s", item.household_id, location.label())
+    else:
+        location_state.current_location = GeocodingClient(item).from_config()
+    return item
+
+
+async def add_new_homes(
+    config: SimulatorConfig,
+    generators: list,
+    *,
+    household_from_cli: bool,
+    sim_ts: datetime,
+) -> None:
+    """Pick up homes completed after the simulator started (e.g. a new primary)."""
+    from simulator.dashboard import location_state
+
+    latest = await load_onboarding_configs(
+        config, household_from_cli=household_from_cli, log=False
+    )
+    known = {generator.config.household_id for generator in generators}
+    for item in latest:
+        if item.household_id in known:
+            continue
+        item = await prepare_home_config(item)
+        generator = TelemetryGenerator(item)
+        await generator.warmup(sim_ts)
+        generators.append(generator)
+        logger.info("Started generator for new household=%s", item.household_id)
+        location_state.active_generator = generator
 
 
 async def run(
@@ -157,38 +305,39 @@ async def run(
     dashboard_host: str = "127.0.0.1",
     dashboard_port: int = 8765,
     live_clock: bool = True,
+    household_from_cli: bool = False,
 ) -> None:
     from simulator.dashboard import location_state
-    from simulator.clients.geocoding import GeocodingClient, apply_location
 
-    if config.geocode_on_start:
-        location = await GeocodingClient(config).resolve(config.location_name)
-        config = apply_location(config, location)
-        location_state.current_location = location
-        logger.info("Home location: %s", location.label())
-    else:
-        location_state.current_location = GeocodingClient(config).from_config()
+    configs = await load_onboarding_configs(
+        config, household_from_cli=household_from_cli
+    )
+
+    prepared: list[SimulatorConfig] = []
+    for item in configs:
+        prepared.append(await prepare_home_config(item))
+    configs = prepared
 
     if dashboard:
         from simulator.dashboard.server import start_dashboard_server
 
         start_dashboard_server(dashboard_host, dashboard_port)
         logger.info(
-            "Open the live dashboard: http://%s:%s",
+            "Open the live dashboard: http://%s:%s/?source=backend&token=ACCESS_JWT",
             dashboard_host,
             dashboard_port,
         )
 
-    generator = TelemetryGenerator(config)
-    location_state.active_generator = generator
-    output_path = generator.open_output()
-    tz = ZoneInfo(config.timezone)
+    generators = [TelemetryGenerator(item) for item in configs]
+    location_state.active_generator = generators[0]
+    output_path = generators[0].open_output()
+    tz = ZoneInfo(configs[0].timezone)
     ingest_client = None
     rabbitmq_publisher = None
     if config.ingest_url.strip():
         from simulator.clients.ingest import IngestClient
 
-        ingest_client = IngestClient(config.ingest_url, config.ingest_token)
+        ingest_client = IngestClient(config.ingest_url, _ingest_token(config))
         logger.info("Publishing ticks over HTTP to %s", ingest_client.url)
     if config.rabbitmq_url.strip():
         from simulator.clients.rabbitmq import RabbitMQPublisher
@@ -206,8 +355,8 @@ async def run(
         )
     logger.info("Writing JSONL to %s", output_path)
     logger.info(
-        "household=%s scenario=%s weather=%s interval=%ss speed=%s live_clock=%s",
-        config.household_id,
+        "households=%s scenario=%s weather=%s interval=%ss speed=%s live_clock=%s",
+        ",".join(item.household_id for item in configs),
         config.scenario,
         config.weather_mode,
         config.simulation_interval_seconds,
@@ -218,22 +367,33 @@ async def run(
     first_ts = datetime.now(tz=tz) if live_clock else start_time
     sim_ts = first_ts
     count = 0
+    last_profile_refresh = first_ts
     try:
-        await generator.warmup(first_ts)
+        for generator in generators:
+            await generator.warmup(first_ts)
         while not location_state.stop_requested.is_set() and (ticks <= 0 or count < ticks):
-            tz = ZoneInfo(generator.config.timezone)
+            tz = ZoneInfo(generators[0].config.timezone)
             if live_clock:
                 sim_ts = datetime.now(tz=tz)
-            record = await generator.step(sim_ts)
-            if ingest_client is not None:
-                await ingest_client.publish(record)
-            if rabbitmq_publisher is not None:
-                await rabbitmq_publisher.publish(record)
-            if not quiet:
-                if pretty:
-                    print(json.dumps(record.model_dump(mode="json"), indent=2, ensure_ascii=False), flush=True)
-                else:
-                    print(record.model_dump_json(), flush=True)
+            if live_clock and (sim_ts - last_profile_refresh).total_seconds() >= 15:
+                await add_new_homes(
+                    config,
+                    generators,
+                    household_from_cli=household_from_cli,
+                    sim_ts=sim_ts,
+                )
+                last_profile_refresh = sim_ts
+            for generator in generators:
+                record = await generator.step(sim_ts)
+                if ingest_client is not None:
+                    await ingest_client.publish(record)
+                if rabbitmq_publisher is not None:
+                    await rabbitmq_publisher.publish(record)
+                if not quiet:
+                    if pretty:
+                        print(json.dumps(record.model_dump(mode="json"), indent=2, ensure_ascii=False), flush=True)
+                    else:
+                        print(record.model_dump_json(), flush=True)
             count += 1
             if ticks > 0 and count >= ticks:
                 break
@@ -258,7 +418,8 @@ async def run(
         logger.info("Stopped by user after %s readings", count)
     finally:
         location_state.request_stop()
-        generator.close_output()
+        for generator in generators:
+            generator.close_output()
         if ingest_client is not None:
             await ingest_client.aclose()
         if rabbitmq_publisher is not None:
@@ -289,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
                 dashboard_host=args.dashboard_host,
                 dashboard_port=args.dashboard_port,
                 live_clock=live_clock,
+                household_from_cli=bool(args.household_id),
             )
         )
     except KeyboardInterrupt:

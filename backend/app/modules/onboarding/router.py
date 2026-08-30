@@ -8,15 +8,20 @@ Conditional steps:
 
 Route summary
 ─────────────
-  PUT  /onboarding/system          Save / update system + inverter info (step 1+2)
-  PUT  /onboarding/battery         Save / update battery config          (step 3 — Off-grid/Hybrid)
-  PUT  /onboarding/grid            Save / update grid config             (step 4 — On-grid/Hybrid)
-  PUT  /onboarding/appliances      Save / update appliance selection     (step 5)
-  POST /onboarding/complete        Mark onboarding as finished           (from review screen)
-  GET  /onboarding/status          Current step + completion state
-  GET  /onboarding/summary         Full data dump for the review screen
+  GET  /onboarding/homes            List homes for this login token
+  POST /onboarding/homes            Add another home (multi-home)
+  POST /onboarding/homes/{id}/primary  Make this home the default
+  PUT  /onboarding/system           Save / update system + inverter (optional ?household_id=)
+  PUT  /onboarding/battery           Save / update battery config
+  PUT  /onboarding/grid              Save / update grid config
+  PUT  /onboarding/appliances        Save / update appliance selection
+  POST /onboarding/complete          Mark onboarding as finished
+  GET  /onboarding/status            Current step + completion state
+  GET  /onboarding/summary           Full data dump for the review screen
 """
-from fastapi import APIRouter, Depends, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query, status
 
 from app.core.deps import get_current_user
 from app.models.user import User
@@ -25,6 +30,7 @@ from app.modules.onboarding.schemas import (
     AppliancesStepIn,
     BatteryStepIn,
     GridStepIn,
+    HomeListOut,
     OnboardingStatusOut,
     OnboardingSummaryOut,
     SolarSystemOut,
@@ -33,6 +39,52 @@ from app.modules.onboarding.schemas import (
 from app.modules.onboarding.service import OnboardingService
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
+
+HouseholdIdQuery = Annotated[
+    str | None,
+    Query(description="Target home. Omit to use the primary home for this user."),
+]
+
+
+@router.get(
+    "/homes",
+    response_model=HomeListOut,
+    summary="List every home owned by the current user",
+)
+async def list_homes(
+    current_user: User = Depends(get_current_user),
+    service: OnboardingService = Depends(get_onboarding_service),
+) -> HomeListOut:
+    return await service.list_homes(current_user.id)
+
+
+@router.post(
+    "/homes",
+    response_model=SolarSystemOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add another home (multi-home). First home is primary.",
+)
+async def create_home(
+    data: SystemStepIn,
+    current_user: User = Depends(get_current_user),
+    service: OnboardingService = Depends(get_onboarding_service),
+) -> SolarSystemOut:
+    system = await service.save_system(current_user.id, data, create_new=True)
+    return SolarSystemOut.model_validate(system)
+
+
+@router.post(
+    "/homes/{household_id}/primary",
+    response_model=HomeListOut,
+    summary="Make this home the default for /energy/me/* and token-only dashboard URLs",
+)
+async def set_primary_home(
+    household_id: str,
+    current_user: User = Depends(get_current_user),
+    service: OnboardingService = Depends(get_onboarding_service),
+) -> HomeListOut:
+    await service.set_primary(current_user.id, household_id)
+    return await service.list_homes(current_user.id)
 
 
 # ── Step 1+2: System + Inverter ───────────────────────────────────────────────
@@ -44,6 +96,7 @@ router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 )
 async def save_system(
     data: SystemStepIn,
+    household_id: HouseholdIdQuery = None,
     current_user: User = Depends(get_current_user),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> SolarSystemOut:
@@ -56,7 +109,7 @@ async def save_system(
 
     Returns the updated `SolarSystem` record.
     """
-    system = await service.save_system(current_user.id, data)
+    system = await service.save_system(current_user.id, data, household_id)
     return SolarSystemOut.model_validate(system)
 
 
@@ -69,6 +122,7 @@ async def save_system(
 )
 async def save_battery(
     data: BatteryStepIn,
+    household_id: HouseholdIdQuery = None,
     current_user: User = Depends(get_current_user),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> SolarSystemOut:
@@ -84,7 +138,7 @@ async def save_battery(
     | backup_hours          | 2, 4, or 8 hours |
     | reserve_pct           | 5 – 50 %         |
     """
-    system = await service.save_battery(current_user.id, data)
+    system = await service.save_battery(current_user.id, data, household_id)
     return SolarSystemOut.model_validate(system)
 
 
@@ -97,6 +151,7 @@ async def save_battery(
 )
 async def save_grid(
     data: GridStepIn,
+    household_id: HouseholdIdQuery = None,
     current_user: User = Depends(get_current_user),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> SolarSystemOut:
@@ -111,7 +166,7 @@ async def save_grid(
     | sanctioned_load_kw | ≥ 1 kW              |
     | discom             | optional (max 100 chars) |
     """
-    system = await service.save_grid(current_user.id, data)
+    system = await service.save_grid(current_user.id, data, household_id)
     return SolarSystemOut.model_validate(system)
 
 
@@ -124,6 +179,7 @@ async def save_grid(
 )
 async def save_appliances(
     data: AppliancesStepIn,
+    household_id: HouseholdIdQuery = None,
     current_user: User = Depends(get_current_user),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> SolarSystemOut:
@@ -135,7 +191,7 @@ async def save_appliances(
     An empty `appliances` list is accepted (user can deselect everything).
     No duplicate `appliance_key` entries allowed in a single request.
     """
-    system = await service.save_appliances(current_user.id, data)
+    system = await service.save_appliances(current_user.id, data, household_id)
     return SolarSystemOut.model_validate(system)
 
 
@@ -148,6 +204,7 @@ async def save_appliances(
     summary="Mark onboarding as complete (review screen — all system types)",
 )
 async def complete_onboarding(
+    household_id: HouseholdIdQuery = None,
     current_user: User = Depends(get_current_user),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> OnboardingStatusOut:
@@ -164,8 +221,8 @@ async def complete_onboarding(
     | Off-grid    | system → battery → appliances            |
     | Hybrid      | system → battery → grid → appliances     |
     """
-    await service.complete_onboarding(current_user.id)
-    return await service.get_status(current_user.id)
+    await service.complete_onboarding(current_user.id, household_id)
+    return await service.get_status(current_user.id, household_id)
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
@@ -176,6 +233,7 @@ async def complete_onboarding(
     summary="Get onboarding progress (all system types)",
 )
 async def get_onboarding_status(
+    household_id: HouseholdIdQuery = None,
     current_user: User = Depends(get_current_user),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> OnboardingStatusOut:
@@ -185,7 +243,7 @@ async def get_onboarding_status(
 
     `steps_remaining` is dynamically computed from the user's chosen `system_type`.
     """
-    return await service.get_status(current_user.id)
+    return await service.get_status(current_user.id, household_id)
 
 
 @router.get(
@@ -194,6 +252,7 @@ async def get_onboarding_status(
     summary="Get full onboarding data (review screen)",
 )
 async def get_onboarding_summary(
+    household_id: HouseholdIdQuery = None,
     current_user: User = Depends(get_current_user),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> OnboardingSummaryOut:
@@ -204,4 +263,4 @@ async def get_onboarding_summary(
     `battery` and `grid` fields are `null` when not applicable for the
     chosen `system_type`.
     """
-    return await service.get_summary(current_user.id)
+    return await service.get_summary(current_user.id, household_id)

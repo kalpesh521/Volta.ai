@@ -42,16 +42,22 @@ class OnboardingService:
 
     # ── Step 1+2: System + Inverter ───────────────────────────────────────────
 
-    async def save_system(self, user_id: uuid.UUID, data: SystemStepIn) -> SolarSystem:
+    async def save_system(
+        self,
+        user_id: uuid.UUID,
+        data: SystemStepIn,
+        household_id: str | None = None,
+        *,
+        create_new: bool = False,
+    ) -> SolarSystem:
         """
-        Upsert the SolarSystem record.
-        If system_type changes, stale battery/grid records are cleaned up.
+        Create or update a home.
+        create_new=True always inserts another home (multi-home).
+        household_id targets a specific home; omit to use/create the primary.
         """
-        system = await self.repo.get_system_by_user(user_id)
-
-        if system is None:
-            # First time — create the record
-            system = await self.repo.create_system(
+        if create_new:
+            count = await self.repo.count_systems(user_id)
+            return await self.repo.create_system(
                 user_id=user_id,
                 panel_type=data.panel_type.value,
                 panel_qty=data.panel_qty,
@@ -60,39 +66,82 @@ class OnboardingService:
                 avg_monthly_bill=data.avg_monthly_bill,
                 inverter_brand=data.inverter_brand.value,
                 inverter_capacity_kw=data.inverter_capacity_kw,
+                is_primary=(count == 0),
             )
-        else:
-            # Subsequent edit — handle system_type transitions
-            old_type = system.system_type
-            new_type = data.system_type.value
 
-            if old_type != new_type:
-                # On-grid no longer needs battery
-                if new_type == SystemType.ON_GRID.value:
-                    await self.repo.delete_battery(system)
-                # Off-grid no longer needs grid
-                if new_type == SystemType.OFF_GRID.value:
-                    await self.repo.delete_grid(system)
+        if household_id:
+            system = await self._require_system(user_id, household_id)
+            return await self._apply_system_update(system, data)
 
-            await self.repo.update_system(
-                system,
+        existing = await self.repo.get_primary_system(user_id)
+        if existing is None:
+            return await self.repo.create_system(
+                user_id=user_id,
                 panel_type=data.panel_type.value,
                 panel_qty=data.panel_qty,
-                system_type=new_type,
+                system_type=data.system_type.value,
                 location=data.location,
                 avg_monthly_bill=data.avg_monthly_bill,
                 inverter_brand=data.inverter_brand.value,
                 inverter_capacity_kw=data.inverter_capacity_kw,
-                last_step=OnboardingStep.SYSTEM.value,
+                is_primary=True,
             )
+        return await self._apply_system_update(existing, data)
 
+    async def _apply_system_update(self, system: SolarSystem, data: SystemStepIn) -> SolarSystem:
+        old_type = system.system_type
+        new_type = data.system_type.value
+        if old_type != new_type:
+            if new_type == SystemType.ON_GRID.value:
+                await self.repo.delete_battery(system)
+            if new_type == SystemType.OFF_GRID.value:
+                await self.repo.delete_grid(system)
+        await self.repo.update_system(
+            system,
+            panel_type=data.panel_type.value,
+            panel_qty=data.panel_qty,
+            system_type=new_type,
+            location=data.location,
+            avg_monthly_bill=data.avg_monthly_bill,
+            inverter_brand=data.inverter_brand.value,
+            inverter_capacity_kw=data.inverter_capacity_kw,
+            last_step=OnboardingStep.SYSTEM.value,
+        )
         return system
+
+    async def list_homes(self, user_id: uuid.UUID):
+        from app.modules.onboarding.schemas import HomeListItem, HomeListOut
+
+        homes = await self.repo.list_systems_by_user(user_id)
+        primary = next((h.household_id for h in homes if h.is_primary), None)
+        if primary is None and homes:
+            primary = homes[0].household_id
+        return HomeListOut(
+            primary_household_id=primary,
+            homes=[
+                HomeListItem(
+                    household_id=h.household_id,
+                    is_primary=h.is_primary,
+                    is_complete=h.is_complete,
+                    system_type=h.system_type,
+                    location=h.location,
+                    last_step=h.last_step,
+                )
+                for h in homes
+            ],
+        )
+
+    async def set_primary(self, user_id: uuid.UUID, household_id: str) -> SolarSystem:
+        system = await self._require_system(user_id, household_id)
+        return await self.repo.set_primary(user_id, system)
 
     # ── Step 3: Battery ───────────────────────────────────────────────────────
 
-    async def save_battery(self, user_id: uuid.UUID, data: BatteryStepIn) -> SolarSystem:
+    async def save_battery(
+        self, user_id: uuid.UUID, data: BatteryStepIn, household_id: str | None = None
+    ) -> SolarSystem:
         """Stores battery config. Raises 422 for On-grid systems."""
-        system = await self._require_system(user_id)
+        system = await self._require_system(user_id, household_id)
 
         if system.system_type not in _NEEDS_BATTERY:
             raise SystemTypeConflictError(
@@ -111,9 +160,11 @@ class OnboardingService:
 
     # ── Step 4: Grid ──────────────────────────────────────────────────────────
 
-    async def save_grid(self, user_id: uuid.UUID, data: GridStepIn) -> SolarSystem:
+    async def save_grid(
+        self, user_id: uuid.UUID, data: GridStepIn, household_id: str | None = None
+    ) -> SolarSystem:
         """Stores grid / tariff config. Raises 422 for Off-grid systems."""
-        system = await self._require_system(user_id)
+        system = await self._require_system(user_id, household_id)
 
         if system.system_type not in _NEEDS_GRID:
             raise SystemTypeConflictError(
@@ -133,9 +184,11 @@ class OnboardingService:
 
     # ── Step 5: Appliances ────────────────────────────────────────────────────
 
-    async def save_appliances(self, user_id: uuid.UUID, data: AppliancesStepIn) -> SolarSystem:
+    async def save_appliances(
+        self, user_id: uuid.UUID, data: AppliancesStepIn, household_id: str | None = None
+    ) -> SolarSystem:
         """Replace the appliance list wholesale. Empty list is valid."""
-        system = await self._require_system(user_id)
+        system = await self._require_system(user_id, household_id)
 
         await self.repo.replace_appliances(
             system=system,
@@ -153,15 +206,13 @@ class OnboardingService:
 
     # ── Complete ──────────────────────────────────────────────────────────────
 
-    async def complete_onboarding(self, user_id: uuid.UUID) -> SolarSystem:
+    async def complete_onboarding(
+        self, user_id: uuid.UUID, household_id: str | None = None
+    ) -> SolarSystem:
         """
         Mark onboarding as done after validating all required steps are complete.
-        Required steps per system_type:
-            On-grid  → system + grid    + appliances
-            Off-grid → system + battery + appliances
-            Hybrid   → system + battery + grid + appliances
         """
-        system = await self._require_system(user_id)
+        system = await self._require_system(user_id, household_id)
 
         if system.is_complete:
             raise OnboardingAlreadyCompleteError()
@@ -182,14 +233,23 @@ class OnboardingService:
 
     # ── Read ──────────────────────────────────────────────────────────────────
 
-    async def get_status(self, user_id: uuid.UUID) -> OnboardingStatusOut:
-        system = await self.repo.get_system_by_user(user_id)
+    async def get_status(
+        self, user_id: uuid.UUID, household_id: str | None = None
+    ) -> OnboardingStatusOut:
+        if household_id:
+            system = await self.repo.get_system_by_household(household_id)
+            if system is None or system.user_id != user_id:
+                system = None
+        else:
+            system = await self.repo.get_primary_system(user_id)
 
         if system is None:
             return OnboardingStatusOut(
                 is_complete=False,
                 last_step=OnboardingStep.SYSTEM.value,
                 system_type=None,
+                household_id=None,
+                is_primary=False,
                 steps_completed=[],
                 steps_required=["system"],
                 steps_remaining=["system"],
@@ -203,14 +263,18 @@ class OnboardingService:
             is_complete=system.is_complete,
             last_step=system.last_step,
             system_type=system.system_type,
+            household_id=system.household_id,
+            is_primary=system.is_primary,
             steps_completed=completed,
             steps_required=required,
             steps_remaining=remaining,
         )
 
-    async def get_summary(self, user_id: uuid.UUID) -> OnboardingSummaryOut:
+    async def get_summary(
+        self, user_id: uuid.UUID, household_id: str | None = None
+    ) -> OnboardingSummaryOut:
         """Full onboarding data — used by the Review screen."""
-        system = await self._require_system(user_id)
+        system = await self._require_system(user_id, household_id)
 
         from app.modules.onboarding.schemas import (
             ApplianceOut,
@@ -238,9 +302,16 @@ class OnboardingService:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    async def _require_system(self, user_id: uuid.UUID) -> SolarSystem:
-        """Load system or raise 404 — used by steps that need system to exist first."""
-        system = await self.repo.get_system_by_user(user_id)
+    async def _require_system(
+        self, user_id: uuid.UUID, household_id: str | None = None
+    ) -> SolarSystem:
+        """Load a home the user owns, or the primary home if household_id is omitted."""
+        if household_id:
+            system = await self.repo.get_system_by_household(household_id)
+            if system is None or system.user_id != user_id:
+                raise OnboardingNotFoundError()
+            return system
+        system = await self.repo.get_primary_system(user_id)
         if system is None:
             raise OnboardingNotFoundError()
         return system

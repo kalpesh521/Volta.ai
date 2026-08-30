@@ -16,7 +16,7 @@ from simulator.engines.battery import BatteryEngine
 from simulator.config import SimulatorConfig, apply_scenario
 from simulator.engines.device import DeviceEngine
 from simulator.engines.energy_balance import dispatch_energy, validate_energy_balance
-from simulator.clients.geocoding import apply_location
+from simulator.clients.geocoding import GeocodingClient, apply_location
 from simulator.engines.grid import GridEngine, grid_is_available
 from simulator.dashboard.live_bus import bus
 from simulator.engines.load import LoadGenerator
@@ -35,6 +35,7 @@ class TelemetryGenerator:
         self.load = LoadGenerator(self.config, self.devices)
         self.battery = BatteryEngine(self.config)
         self.grid = GridEngine(self.config)
+        self.home_location = GeocodingClient(self.config).from_config()
         self._writer: TextIO | None = None
         self._output_path: Path | None = None
 
@@ -51,6 +52,7 @@ class TelemetryGenerator:
         self.battery.config = self.config
         self.grid.config = self.config
         self.weather_client = WeatherClient(self.config)
+        self.home_location = location
         await self.weather_client.warmup(ts)
 
     def open_output(self, path: Path | None = None) -> Path:
@@ -150,7 +152,7 @@ class TelemetryGenerator:
             "system_losses_kw": balance.system_losses_kw,
             "warnings": list(balance.warnings),
             "scenario": self.config.scenario,
-            "location": location_state.current_location.model_dump(mode="json"),
+            "location": self.home_location.model_dump(mode="json"),
         }
 
         record = TelemetryRecord(

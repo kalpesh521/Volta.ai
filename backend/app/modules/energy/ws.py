@@ -14,12 +14,16 @@ from app.core.database import AsyncSessionLocal
 from app.core.security import TokenType, decode_token
 from app.modules.auth.repositories.user_repository import UserRepository
 from app.modules.energy.schemas import _HOUSEHOLD_ID_PATTERN
-from app.modules.energy.service import to_live
+from app.modules.energy.service import stamp_onboarding_place, to_live
+from app.modules.onboarding.repository import OnboardingRepository
 
 logger = logging.getLogger("volta.ws")
 
 router = APIRouter(tags=["energy-live"])
 _HOUSEHOLD_RE = re.compile(_HOUSEHOLD_ID_PATTERN)
+
+
+_LEGACY_HOUSEHOLDS = frozenset({"home_001"})
 
 
 async def _user_from_token(token: str):
@@ -43,6 +47,66 @@ async def _user_from_token(token: str):
         return user
 
 
+async def _resolve_household_for_socket(user, household_id: str) -> tuple[str | None, str]:
+    """
+    Bind the socket to a household the caller is allowed to watch.
+
+    Returns (household_id, error_code). error_code is "" on success.
+
+    omitted / home_001  → primary completed home from the JWT, else any
+                          completed home; demo home_001 only when the user
+                          has no onboarding row yet (non-production)
+    any other id        → must own it and have finished onboarding
+    """
+    requested = (household_id or "").strip()
+    demo_alias = not requested or requested in _LEGACY_HOUSEHOLDS
+    production = settings.ENVIRONMENT.lower() == "production"
+
+    async with AsyncSessionLocal() as session:
+        repo = OnboardingRepository(session)
+        homes = await repo.list_systems_by_user(user.id)
+        primary = next((home for home in homes if home.is_primary), None)
+        if primary is None and homes:
+            primary = homes[0]
+
+        if requested and not demo_alias:
+            system = await repo.get_system_by_household(requested)
+            if system is None or system.user_id != user.id:
+                return None, "household_forbidden"
+            if not system.is_complete:
+                return None, "onboarding_incomplete"
+            return system.household_id, ""
+
+        if primary is not None:
+            if not primary.is_complete:
+                return None, "onboarding_incomplete"
+            return primary.household_id, ""
+        if homes:
+            return None, "onboarding_incomplete"
+        if not production and demo_alias:
+            return requested or "home_001", ""
+        return None, "onboarding_incomplete"
+
+
+async def _onboarding_location(household_id: str) -> str | None:
+    try:
+        async with AsyncSessionLocal() as session:
+            system = await OnboardingRepository(session).get_system_by_household(
+                household_id
+            )
+            if system is None:
+                return None
+            text = (system.location or "").strip()
+            return text or None
+    except Exception:
+        logger.debug(
+            "onboarding location lookup failed household=%s",
+            household_id,
+            exc_info=True,
+        )
+        return None
+
+
 def _origin_allowed(origin: str | None) -> bool:
     if not origin:
         return True
@@ -53,10 +117,11 @@ def _origin_allowed(origin: str | None) -> bool:
 async def energy_live_socket(
     websocket: WebSocket,
     token: str = "",
-    household_id: str = "home_001",
+    household_id: str = "",
 ) -> None:
     """
-    Query: `token` (user access JWT) and `household_id`.
+    Query: `token` (user access JWT) and optional `household_id`.
+    Omit household_id to use the primary completed home from the login token.
     Sends `{type: hello|telemetry|ping|error, ...}`.
     """
     origin = websocket.headers.get("origin")
@@ -66,7 +131,7 @@ async def energy_live_socket(
 
     await websocket.accept()
 
-    if not _HOUSEHOLD_RE.fullmatch(household_id):
+    if household_id and not _HOUSEHOLD_RE.fullmatch(household_id):
         await websocket.send_json({"type": "error", "code": "invalid_household"})
         await websocket.close(code=1008)
         return
@@ -76,6 +141,15 @@ async def energy_live_socket(
         await websocket.send_json({"type": "error", "code": "invalid_token"})
         await websocket.close(code=4401)
         return
+
+    resolved, household_error = await _resolve_household_for_socket(user, household_id)
+    if not resolved:
+        await websocket.send_json(
+            {"type": "error", "code": household_error or "household_forbidden"}
+        )
+        await websocket.close(code=4403)
+        return
+    household_id = resolved
 
     redis_live = getattr(websocket.app.state, "redis_live", None)
     timescale = getattr(websocket.app.state, "timescale", None)
@@ -89,14 +163,17 @@ async def energy_live_socket(
     if latest is None:
         latest = await energy_store.get_latest(household_id)
 
+    onboarding_location = await _onboarding_location(household_id)
     await websocket.send_json(
         {
             "type": "hello",
             "household_id": household_id,
             "user_id": str(user.id),
+            "location": onboarding_location,
         }
     )
     if latest is not None:
+        latest = stamp_onboarding_place(latest, onboarding_location)
         await websocket.send_json(
             {
                 "type": "telemetry",
@@ -129,7 +206,10 @@ async def energy_live_socket(
                     break
                 from app.modules.energy.schemas import TelemetryRecord
 
-                record = TelemetryRecord.model_validate_json(body)
+                record = stamp_onboarding_place(
+                    TelemetryRecord.model_validate_json(body),
+                    onboarding_location,
+                )
                 await websocket.send_json(
                     {
                         "type": "telemetry",

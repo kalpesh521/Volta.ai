@@ -21,6 +21,7 @@ from app.modules.energy.schemas import (
     EnergyTotals,
     GridStatusOut,
     HistoryOut,
+    HomeLocationOut,
     HourlyBucketOut,
     HourlySummaryOut,
     LiveEnergyOut,
@@ -171,6 +172,67 @@ def to_grid(record: TelemetryRecord) -> GridStatusOut:
     )
 
 
+def _location_out(extra: dict[str, Any]) -> HomeLocationOut | None:
+    loc = extra.get("location")
+    if isinstance(loc, str) and loc.strip():
+        text = loc.strip()
+        return HomeLocationOut(name=text, label=text, query=text)
+    if not isinstance(loc, dict):
+        return None
+    name = loc.get("name") or loc.get("query")
+    if not name and loc.get("latitude") is None:
+        return None
+    admin1 = loc.get("admin1")
+    country = loc.get("country")
+    parts = [str(name)] if name else []
+    if admin1 and admin1 != name:
+        parts.append(str(admin1))
+    if country:
+        parts.append(str(country))
+    return HomeLocationOut(
+        name=str(name) if name else None,
+        label=", ".join(parts) if parts else None,
+        latitude=loc.get("latitude"),
+        longitude=loc.get("longitude"),
+        timezone=loc.get("timezone"),
+        admin1=str(admin1) if admin1 else None,
+        country=str(country) if country else None,
+        query=str(loc["query"]) if loc.get("query") else None,
+        source=str(loc["source"]) if loc.get("source") else None,
+    )
+
+
+def _is_gps_or_unnamed(loc: object) -> bool:
+    if loc is None:
+        return True
+    if isinstance(loc, str):
+        return not loc.strip()
+    if not isinstance(loc, dict):
+        return True
+    name = str(loc.get("name") or "").strip()
+    return loc.get("source") == "browser-gps" or name in {"", "Current location"}
+
+
+def stamp_onboarding_place(
+    record: TelemetryRecord, place: str | None
+) -> TelemetryRecord:
+    """Keep the onboarding city on the tick when GPS leftover coords are stored."""
+    text = (place or "").strip()
+    if not text:
+        return record
+    extra = _extra(record)
+    if not _is_gps_or_unnamed(extra.get("location")):
+        return record
+    payload = record.model_dump()
+    payload["location"] = {
+        "name": text,
+        "label": text,
+        "query": text,
+        "source": "onboarding",
+    }
+    return TelemetryRecord.model_validate(payload)
+
+
 def to_live(record: TelemetryRecord) -> LiveEnergyOut:
     extra = _extra(record)
     warnings = extra.get("warnings") or []
@@ -208,6 +270,7 @@ def to_live(record: TelemetryRecord) -> LiveEnergyOut:
         ),
         devices=list(record.devices),
         weather=record.weather,
+        location=_location_out(extra),
         energy_balance_status=record.energy_balance_status,
         energy_balance_error_kw=record.energy_balance_error_kw,
         energy_balance_valid=record.energy_balance_valid,
@@ -256,8 +319,13 @@ class EnergyService:
             )
         return latest
 
-    async def get_live(self, household_id: str) -> LiveEnergyOut:
-        return to_live(await self._require_latest(household_id))
+    async def get_live(
+        self, household_id: str, onboarding_location: str | None = None
+    ) -> LiveEnergyOut:
+        record = stamp_onboarding_place(
+            await self._require_latest(household_id), onboarding_location
+        )
+        return to_live(record)
 
     async def get_battery(self, household_id: str) -> BatteryStatusOut:
         return to_battery(await self._require_latest(household_id))

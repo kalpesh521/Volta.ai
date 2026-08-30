@@ -283,6 +283,9 @@ async def test_full_tick_energy_balance_and_night_solar():
     )
     assert getattr(noon_row, "simulation_time", None)
     assert getattr(noon_row, "wall_clock_time", None)
+    loc = noon_row.model_dump().get("location") or {}
+    assert loc.get("name")
+    assert loc.get("latitude") is not None
 
 
 def test_geocoding_parses_open_meteo_result():
@@ -464,3 +467,78 @@ def test_cli_rabbitmq_url_override():
     )
     config = apply_cli_overrides(_cfg(geocode_on_start=False), args)
     assert config.rabbitmq_url == "amqp://volta:volta@localhost:5672/volta"
+
+
+def test_apply_onboarding_profile_sets_capacity_and_devices():
+    from simulator.profile import apply_onboarding_profile
+
+    profile = {
+        "household_id": "home_abc123def456",
+        "solar_capacity_kwp": 4.0,
+        "inverter_capacity_kw": 5.0,
+        "battery_present": True,
+        "battery_capacity_kwh": 10.0,
+        "battery_usable_capacity_kwh": 8.0,
+        "battery_minimum_soc_percent": 20.0,
+        "battery_max_charge_power_kw": 5.0,
+        "battery_max_discharge_power_kw": 5.0,
+        "grid_available": True,
+        "zero_export_mode": False,
+        "location": "Pune, India",
+        "devices": [
+            {
+                "device_id": "dev_refrigerator",
+                "device_name": "Refrigerator",
+                "device_type": "refrigerator",
+                "rated_power_kw": 0.15,
+                "critical": True,
+                "controllable": False,
+                "schedule": {"mode": "cyclic", "on_minutes": 25, "cycle_minutes": 45},
+            }
+        ],
+    }
+    config = apply_onboarding_profile(_cfg(household_id="home_001"), profile)
+    assert config.household_id == "home_abc123def456"
+    assert config.solar_capacity_kwp == 4.0
+    assert config.battery_capacity_kwh == 10.0
+    assert config.location_name == "Pune, India"
+    catalog = config.device_catalog()
+    assert len(catalog) == 1
+    assert catalog[0]["device_type"] == "refrigerator"
+    assert catalog[0]["critical"] is True
+
+
+def test_cli_from_onboarding_does_not_require_household_id():
+    from simulator.main import apply_cli_overrides, build_parser
+
+    args = build_parser().parse_args(
+        ["--from-onboarding", "--ingest-url", "http://127.0.0.1:8000", "--no-geocode"]
+    )
+    assert args.household_id is None
+    config = apply_cli_overrides(_cfg(geocode_on_start=False), args)
+    assert config.from_onboarding is True
+    assert config.ingest_url == "http://127.0.0.1:8000"
+
+
+def test_apply_onboarding_profile_on_grid_disables_battery():
+    from simulator.profile import apply_onboarding_profile
+
+    profile = {
+        "household_id": "home_ongrid0001",
+        "solar_capacity_kwp": 3.3,
+        "inverter_capacity_kw": 5.0,
+        "battery_present": False,
+        "battery_capacity_kwh": 10.0,
+        "battery_usable_capacity_kwh": 8.0,
+        "battery_minimum_soc_percent": 20.0,
+        "battery_max_charge_power_kw": 5.0,
+        "battery_max_discharge_power_kw": 5.0,
+        "grid_available": True,
+        "zero_export_mode": True,
+        "devices": [],
+    }
+    config = apply_onboarding_profile(_cfg(), profile)
+    assert config.battery_present is False
+    assert config.battery_capacity_kwh == 0.0
+    assert config.zero_export_mode is True
+    assert config.device_catalog() == []

@@ -84,6 +84,14 @@
     }
     .loc-results button:hover { background: rgba(244, 169, 59, 0.12); }
     .loc-wrap { position: relative; }
+    .chip select,
+    select.chip {
+      appearance: none; -webkit-appearance: none;
+      background: rgba(18, 48, 44, 0.86);
+      border: 1px solid var(--border);
+      border-radius: 999px; padding: 7px 12px; font-size: 12px; color: var(--text);
+      max-width: 260px;
+    }
     .chip {
       display: inline-flex; align-items: center; gap: 8px;
       background: rgba(18, 48, 44, 0.86);
@@ -195,8 +203,9 @@
       <div class="status-row">
         <span class="chip"><i id="liveDot" class="dot"></i><span id="liveLabel">Connecting</span></span>
         <button type="button" class="stop" id="stopBtn" title="Stop simulator and Open-Meteo API calls">Stop</button>
-        <span class="chip" id="houseChip">home_001</span>
-        <span class="chip" id="locationChip">Pimpri-Chinchwad</span>
+        <span class="chip" id="houseChip">home —</span>
+        <select id="homeSelect" class="chip" hidden title="Switch home"></select>
+        <span class="chip" id="locationChip">location —</span>
         <span class="chip" id="clockChip">--:--</span>
         <span class="chip" id="qualityChip">quality —</span>
         <span class="chip" id="balanceChip">balance —</span>
@@ -402,8 +411,7 @@
       $("emptyState").hidden = true;
       $("tableWrap").hidden = false;
       $("houseChip").textContent = row.household_id || "home_001";
-      const loc = row.location || {};
-      $("locationChip").textContent = locationLabel(loc);
+      setLocationChip(row.location);
       $("clockChip").textContent = fmtTime(row.timestamp);
       $("qualityChip").textContent = "quality " + (row.data_quality || "—");
       $("balanceChip").textContent = "balance " + (row.energy_balance_status || "—");
@@ -475,7 +483,24 @@
 
     let liveSource = null;
     let stopped = false;
+    let wsFatal = false;
     let pollTimer = 0;
+    let wsSession = 0;
+    let backendOpts = null;
+    const FATAL_WS = new Set([
+      "invalid_token",
+      "household_forbidden",
+      "onboarding_incomplete",
+      "invalid_household",
+    ]);
+
+    function resetTelemetry() {
+      state.history = [];
+      state.lastStamp = "";
+      namedHome = "";
+      const log = $("logBody");
+      if (log) log.innerHTML = "";
+    }
 
     function connectLive() {
       if (stopped) return;
@@ -503,17 +528,29 @@
     }
 
     function connectBackendWs(opts) {
+      const session = ++wsSession;
+      if (liveSource && typeof liveSource.close === "function") {
+        try { liveSource.close(); } catch { /* ignore */ }
+        liveSource = null;
+      }
+      wsFatal = false;
       const wsUrl = new URL(opts.ws || "ws://127.0.0.1:8000/ws/energy");
       wsUrl.searchParams.set("token", opts.token || "");
-      wsUrl.searchParams.set("household_id", opts.household || "home_001");
+      const household = (opts.household || "").trim();
+      // Omit household_id to follow the current primary. Pass an id only when
+      // the user picks another home in the dropdown.
+      if (household && household !== "home_001") {
+        wsUrl.searchParams.set("household_id", household);
+      }
       if (stopped) return;
       const socket = new WebSocket(wsUrl.toString());
       liveSource = socket;
       socket.onopen = () => {
-        if (!stopped) setLive(true, "WS connecting");
+        if (session !== wsSession || stopped) return;
+        setLive(true, "WS connecting");
       };
       socket.onmessage = (event) => {
-        if (stopped) return;
+        if (session !== wsSession || stopped) return;
         let payload;
         try {
           payload = JSON.parse(event.data);
@@ -522,10 +559,19 @@
         }
         if (payload.type === "error") {
           setLive(false, payload.code || "WS error");
+          if (FATAL_WS.has(payload.code)) wsFatal = true;
           return;
         }
         if (payload.type === "hello") {
-          setLive(true, "Live · " + (payload.household_id || "backend"));
+          const hid = payload.household_id || "backend";
+          setLive(true, "Live · " + hid);
+          if (payload.household_id) $("houseChip").textContent = payload.household_id;
+          const select = $("homeSelect");
+          if (payload.household_id && select && select.options.length) {
+            select.value = payload.household_id;
+          }
+          setLocationChip(payload.location);
+          $("emptyState").hidden = true;
           return;
         }
         if (payload.type === "ping") return;
@@ -535,14 +581,58 @@
         }
       };
       socket.onerror = () => {
-        if (!stopped) setLive(false, "WS error");
+        if (session === wsSession && !stopped && !wsFatal) setLive(false, "WS error");
       };
       socket.onclose = () => {
         if (liveSource === socket) liveSource = null;
-        if (stopped) return;
+        if (session !== wsSession || stopped || wsFatal) return;
         setLive(false, "Reconnecting");
-        setTimeout(() => connectBackendWs(opts), 1500);
+        setTimeout(() => {
+          if (session !== wsSession || stopped || wsFatal) return;
+          connectBackendWs(opts);
+        }, 1500);
       };
+    }
+
+    async function loadHomesAndConnect(opts) {
+      const candidates = [opts.api, "http://127.0.0.1:8000", "http://127.0.0.1:8001"];
+      const seen = new Set();
+      let homes = null;
+      for (const raw of candidates) {
+        const base = String(raw || "").replace(/\/$/, "");
+        if (!base || seen.has(base)) continue;
+        seen.add(base);
+        try {
+          const response = await fetch(base + "/energy/me/homes", {
+            headers: { Authorization: "Bearer " + (opts.token || "") },
+          });
+          if (!response.ok) continue;
+          homes = await response.json();
+          opts.api = base;
+          break;
+        } catch {
+          /* try next API port */
+        }
+      }
+      backendOpts = opts;
+      const select = $("homeSelect");
+      select.innerHTML = "";
+      const rows = (homes && homes.homes) || [];
+      const primary = (homes && homes.primary_household_id) || "";
+      rows.forEach((home) => {
+        const option = document.createElement("option");
+        option.value = home.household_id;
+        const label = home.location || home.household_id;
+        option.textContent = (home.is_primary ? "★ " : "") + label;
+        option.selected = home.household_id === primary;
+        select.appendChild(option);
+      });
+      select.hidden = rows.length < 2;
+      if (primary) $("houseChip").textContent = primary;
+      const chosen = rows.find((home) => home.household_id === primary);
+      if (chosen && chosen.location) setLocationChip(chosen.location);
+      resetTelemetry();
+      connectBackendWs({ ...opts, household: "" });
     }
 
     async function pollLatest() {
@@ -604,9 +694,19 @@
       box.classList.add("open");
     }
 
+    let namedHome = "";
+
+    function isGpsPlace(loc) {
+      if (!loc || typeof loc !== "object") return false;
+      const name = String(loc.name || "");
+      return loc.source === "browser-gps" || name === "Current location";
+    }
+
     function locationLabel(loc) {
-      if (!loc || !loc.name) return "location —";
-      if (loc.source === "browser-gps") {
+      if (typeof loc === "string" && loc.trim()) return loc.trim();
+      if (!loc || typeof loc !== "object") return "";
+      if (isGpsPlace(loc)) {
+        if (namedHome) return namedHome;
         const lat = Number(loc.latitude);
         const lon = Number(loc.longitude);
         if (Number.isFinite(lat) && Number.isFinite(lon)) {
@@ -614,7 +714,20 @@
         }
         return "Current location";
       }
-      return loc.admin1 && loc.admin1 !== loc.name ? loc.name + ", " + loc.admin1 : loc.name;
+      if (loc.label && String(loc.label).trim() && loc.label !== "Current location") {
+        return loc.label;
+      }
+      if (loc.name && loc.name !== "Current location") {
+        return loc.admin1 && loc.admin1 !== loc.name ? loc.name + ", " + loc.admin1 : loc.name;
+      }
+      return (loc.query && String(loc.query).trim()) || namedHome;
+    }
+
+    function setLocationChip(loc) {
+      const text = locationLabel(loc);
+      if (!text) return;
+      namedHome = text;
+      $("locationChip").textContent = text;
     }
 
     async function applyPlace(place) {
@@ -670,21 +783,28 @@
     });
     $("gpsBtn").addEventListener("click", () => requestGps());
     $("stopBtn").addEventListener("click", stopSimulator);
+    $("homeSelect").addEventListener("change", () => {
+      if (!backendOpts) return;
+      resetTelemetry();
+      connectBackendWs({ ...backendOpts, household: $("homeSelect").value });
+    });
     document.addEventListener("click", (event) => {
       if (!event.target.closest(".loc-wrap")) $("locResults").classList.remove("open");
     });
 
-    requestGps({ silent: true });
     const params = new URLSearchParams(window.location.search);
     if (params.get("source") === "backend") {
       $("emptyState").querySelector("p").textContent =
-        "Waiting for backend WebSocket telemetry.";
-      connectBackendWs({
+        "Waiting for live data from your primary home.";
+      $("locForm").hidden = true;
+      $("stopBtn").hidden = true;
+      loadHomesAndConnect({
         ws: params.get("ws") || "ws://127.0.0.1:8000/ws/energy",
+        api: params.get("api") || "",
         token: params.get("token") || "",
-        household: params.get("household") || "home_001",
       });
     } else {
+      requestGps({ silent: true });
       loadHistory().then(connectLive);
     }
   </script>

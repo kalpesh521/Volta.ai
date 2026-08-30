@@ -46,9 +46,38 @@ def test_websocket_hello_with_patched_user(monkeypatch):
         return FakeUser()
 
     monkeypatch.setattr("app.modules.energy.ws._user_from_token", fake_user)
+
+    async def fake_household(_user, household_id: str):
+        return (household_id or "home_001", "")
+
+    monkeypatch.setattr(
+        "app.modules.energy.ws._resolve_household_for_socket", fake_household
+    )
     with TestClient(app) as client:
         with client.websocket_connect("/ws/energy?token=ok&household_id=home_001") as ws:
             hello = ws.receive_json()
             assert hello["type"] == "hello"
             assert hello["household_id"] == "home_001"
             ws.close()
+
+
+def test_websocket_rejects_unowned_household(monkeypatch):
+    class FakeUser:
+        id = uuid.uuid4()
+        is_active = True
+
+    async def fake_user(_token: str):
+        return FakeUser()
+
+    async def deny(_user, _household_id: str):
+        return None, "household_forbidden"
+
+    monkeypatch.setattr("app.modules.energy.ws._user_from_token", fake_user)
+    monkeypatch.setattr(
+        "app.modules.energy.ws._resolve_household_for_socket", deny
+    )
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/energy?token=ok&household_id=home_001") as ws:
+            payload = ws.receive_json()
+            assert payload["type"] == "error"
+            assert payload["code"] == "household_forbidden"

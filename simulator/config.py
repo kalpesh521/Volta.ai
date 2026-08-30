@@ -202,6 +202,10 @@ class SimulatorConfig(BaseSettings):
     ingest_url: str = ""
     ingest_token: str = ""
 
+    # Backend base URL for GET /energy/{id}/profile (onboarding → generator knobs).
+    backend_url: str = ""
+    from_onboarding: bool = False
+
     # RabbitMQ publisher (backend ingest pipeline). Empty URL disables it.
     rabbitmq_url: str = ""
     rabbitmq_exchange: str = "telemetry"

@@ -127,6 +127,7 @@ class ApplianceOut(BaseModel):
 
 class SolarSystemOut(BaseModel):
     id:                   uuid.UUID
+    household_id:        str
     panel_type:           str
     panel_qty:            int
     system_type:          str
@@ -136,6 +137,7 @@ class SolarSystemOut(BaseModel):
     inverter_capacity_kw: Decimal
     last_step:            str
     is_complete:          bool
+    is_primary:           bool = False
     completed_at:         datetime | None
     created_at:           datetime
     updated_at:           datetime
@@ -151,6 +153,8 @@ class OnboardingStatusOut(BaseModel):
     is_complete:       bool
     last_step:         str
     system_type:       str | None    # null if system step not done yet
+    household_id:      str | None    # null until the system step creates the row
+    is_primary:        bool = False
     steps_completed:   list[str]
     steps_required:    list[str]     # all steps the user must complete (system-type aware)
     steps_remaining:   list[str]     # steps_required minus steps_completed
@@ -167,3 +171,19 @@ class OnboardingSummaryOut(BaseModel):
     appliances: list[ApplianceOut]
     is_complete: bool
     last_step:   str
+
+
+class HomeListItem(BaseModel):
+    household_id: str
+    is_primary:    bool
+    is_complete:   bool
+    system_type:   str
+    location:      str | None
+    last_step:     str
+
+    model_config = {"from_attributes": True}
+
+
+class HomeListOut(BaseModel):
+    primary_household_id: str | None
+    homes: list[HomeListItem]

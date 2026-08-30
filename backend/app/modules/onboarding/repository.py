@@ -7,11 +7,12 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.modules.onboarding.enums import OnboardingStep
+from app.modules.onboarding.household import generate_household_id
 from app.modules.onboarding.models import (
     BatteryConfig,
     GridConfig,
@@ -26,16 +27,70 @@ class OnboardingRepository:
 
     # ── SolarSystem ───────────────────────────────────────────────────────────
 
-    async def get_system_by_user(self, user_id: uuid.UUID) -> SolarSystem | None:
-        """Load the system with all related records in a single round-trip."""
+    _SYSTEM_LOAD = (
+        selectinload(SolarSystem.battery_config),
+        selectinload(SolarSystem.grid_config),
+        selectinload(SolarSystem.appliances),
+    )
+
+    async def list_systems_by_user(self, user_id: uuid.UUID) -> list[SolarSystem]:
         result = await self.db.execute(
             select(SolarSystem)
             .where(SolarSystem.user_id == user_id)
-            .options(
-                selectinload(SolarSystem.battery_config),
-                selectinload(SolarSystem.grid_config),
-                selectinload(SolarSystem.appliances),
-            )
+            .options(*self._SYSTEM_LOAD)
+            .order_by(SolarSystem.is_primary.desc(), SolarSystem.created_at.asc())
+        )
+        return list(result.scalars().unique().all())
+
+    async def count_systems(self, user_id: uuid.UUID) -> int:
+        result = await self.db.execute(
+            select(func.count()).select_from(SolarSystem).where(SolarSystem.user_id == user_id)
+        )
+        return int(result.scalar_one())
+
+    async def get_primary_system(self, user_id: uuid.UUID) -> SolarSystem | None:
+        result = await self.db.execute(
+            select(SolarSystem)
+            .where(SolarSystem.user_id == user_id, SolarSystem.is_primary.is_(True))
+            .options(*self._SYSTEM_LOAD)
+        )
+        rows = list(result.scalars().unique().all())
+        if rows:
+            return rows[0]
+        homes = await self.list_systems_by_user(user_id)
+        return homes[0] if homes else None
+
+    async def get_system_by_user(self, user_id: uuid.UUID) -> SolarSystem | None:
+        """Backward-compatible alias: the user's primary home."""
+        return await self.get_primary_system(user_id)
+
+    async def get_completed_systems(self) -> list[SolarSystem]:
+        """All finished homes — used by the simulator to generate ticks."""
+        result = await self.db.execute(
+            select(SolarSystem)
+            .where(SolarSystem.is_complete.is_(True))
+            .options(*self._SYSTEM_LOAD)
+            .order_by(SolarSystem.created_at.asc())
+        )
+        return list(result.scalars().unique().all())
+
+    async def set_primary(self, user_id: uuid.UUID, system: SolarSystem) -> SolarSystem:
+        """Clear every home, then mark this one. Avoids a unique-index clash."""
+        now = datetime.now(timezone.utc)
+        await self.db.execute(
+            update(SolarSystem)
+            .where(SolarSystem.user_id == user_id)
+            .values(is_primary=False, updated_at=now)
+        )
+        await self.db.flush()
+        return await self.update_system(system, is_primary=True)
+
+    async def get_system_by_household(self, household_id: str) -> SolarSystem | None:
+        """Look up by telemetry household_id. Used for energy authorization."""
+        result = await self.db.execute(
+            select(SolarSystem)
+            .where(SolarSystem.household_id == household_id)
+            .options(*self._SYSTEM_LOAD)
         )
         return result.scalar_one_or_none()
 
@@ -50,9 +105,12 @@ class OnboardingRepository:
         avg_monthly_bill: Decimal | None,
         inverter_brand: str,
         inverter_capacity_kw: Decimal,
+        is_primary: bool = False,
     ) -> SolarSystem:
         system = SolarSystem(
             user_id=user_id,
+            household_id=generate_household_id(),
+            is_primary=is_primary,
             panel_type=panel_type,
             panel_qty=panel_qty,
             system_type=system_type,

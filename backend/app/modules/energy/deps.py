@@ -34,6 +34,16 @@ def _token_digest(value: str) -> bytes:
     return hashlib.sha256(value.encode("utf-8")).digest()
 
 
+def verify_ingest_token(provided: str | None) -> None:
+    """Constant-time compare of SHA-256 digests. Raises if missing/wrong."""
+    expected = (settings.INGEST_TOKEN or "").strip()
+    token = (provided or "").strip()
+    if not expected or not token:
+        raise InvalidIngestTokenError()
+    if not hmac.compare_digest(_token_digest(token), _token_digest(expected)):
+        raise InvalidIngestTokenError()
+
+
 def require_ingest_token(
     x_ingest_token: str | None = Header(
         default=None,
@@ -45,9 +55,4 @@ def require_ingest_token(
     Constant-time compare of SHA-256 digests so token length is not leaked
     via hmac.compare_digest's equal-length requirement.
     """
-    expected = (settings.INGEST_TOKEN or "").strip()
-    provided = (x_ingest_token or "").strip()
-    if not expected or not provided:
-        raise InvalidIngestTokenError()
-    if not hmac.compare_digest(_token_digest(provided), _token_digest(expected)):
-        raise InvalidIngestTokenError()
+    verify_ingest_token(x_ingest_token)
