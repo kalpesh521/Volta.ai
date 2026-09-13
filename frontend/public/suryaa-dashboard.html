@@ -529,6 +529,7 @@
 
     function connectBackendWs(opts) {
       const session = ++wsSession;
+      let sawHello = false;
       if (liveSource && typeof liveSource.close === "function") {
         try { liveSource.close(); } catch { /* ignore */ }
         liveSource = null;
@@ -560,9 +561,15 @@
         if (payload.type === "error") {
           setLive(false, payload.code || "WS error");
           if (FATAL_WS.has(payload.code)) wsFatal = true;
+          const hint = $("emptyState") && $("emptyState").querySelector("p");
+          if (hint && payload.code === "invalid_token") {
+            hint.textContent = "Token invalid or expired. Run ./scripts/dev-url.sh and open the new URL.";
+            $("emptyState").hidden = false;
+          }
           return;
         }
         if (payload.type === "hello") {
+          sawHello = true;
           const hid = payload.household_id || "backend";
           setLive(true, "Live · " + hid);
           if (payload.household_id) $("houseChip").textContent = payload.household_id;
@@ -583,9 +590,17 @@
       socket.onerror = () => {
         if (session === wsSession && !stopped && !wsFatal) setLive(false, "WS error");
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (liveSource === socket) liveSource = null;
         if (session !== wsSession || stopped || wsFatal) return;
+        if (!sawHello && (event.code === 1008 || event.code === 1006 || event.code === 403)) {
+          const hint = $("emptyState") && $("emptyState").querySelector("p");
+          if (hint) {
+            hint.textContent =
+              "Live WebSocket was blocked (origin/CORS). Open http://127.0.0.1:8765/?source=backend&token=… — not port 8766.";
+            $("emptyState").hidden = false;
+          }
+        }
         setLive(false, "Reconnecting");
         setTimeout(() => {
           if (session !== wsSession || stopped || wsFatal) return;

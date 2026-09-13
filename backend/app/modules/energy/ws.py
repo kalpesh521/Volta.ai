@@ -10,6 +10,7 @@ import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.config import settings
+from app.core.cors import is_allowed_origin
 from app.core.database import AsyncSessionLocal
 from app.core.security import TokenType, decode_token
 from app.modules.auth.repositories.user_repository import UserRepository
@@ -108,9 +109,7 @@ async def _onboarding_location(household_id: str) -> str | None:
 
 
 def _origin_allowed(origin: str | None) -> bool:
-    if not origin:
-        return True
-    return origin in settings.CORS_ORIGINS
+    return is_allowed_origin(origin)
 
 
 @router.websocket("/ws/energy")

@@ -15,6 +15,11 @@ tmp/
 temp/
 .cache/
 
+# Local one-command stack
+scripts/.run/
+scripts/.logs/
+scripts/dev-credentials.env
+
 # Python
 __pycache__/
 *.py[cod]

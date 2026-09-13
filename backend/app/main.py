@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.core.config import settings
+from app.core.cors import cors_origin_regex
 from app.core.exceptions import register_exception_handlers
 from app.core.rate_limit import limiter
 from app.modules.auth.oauth_router import router as oauth_router
@@ -86,10 +87,12 @@ app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 
-# --- CORS: explicit allow-list, never "*", credentials are allowed
+# --- CORS: explicit allow-list, never "*". Localhost any port in non-production
+# so Cursor/WSL forwarding (:8765 → :8766) can still open the live WebSocket.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
