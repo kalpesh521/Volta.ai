@@ -320,15 +320,17 @@ PY
     return 1
   }
 
-  local backend_url sim_url
+  local backend_url sim_url console_url
   backend_url="http://${DASH_HOST}:${DASH_PORT}/?source=backend&token=${token}"
   sim_url="http://${DASH_HOST}:${DASH_PORT}"
-  printf '%s\n' "$backend_url" > "$URL_FILE"
+  console_url="http://${API_HOST}:${API_PORT}/ui/energy?token=${token}"
+  printf '%s\n' "$console_url" > "$URL_FILE"
   printf '%s\n' "$token" > "$RUN_DIR/access_token"
 
   echo
+  printf '%sEnergy console (API :8000, login + /energy/*)%s\n  %s\n' "$BOLD" "$RESET" "$console_url"
   printf '%sDashboard (simulator SSE, no login)%s\n  %s\n' "$BOLD" "$RESET" "$sim_url"
-  printf '%sDashboard (backend WebSocket, this user)%s\n  %s\n' "$BOLD" "$RESET" "$backend_url"
+  printf '%sDashboard (backend WebSocket)%s\n  %s\n' "$BOLD" "$RESET" "$backend_url"
   printf '%sLogged in as%s %s  %s(access token ~15 min)%s\n' "$BOLD" "$RESET" "$email" "$YELLOW" "$RESET"
   echo
   ok "Refresh the URL later with: $SCRIPTS/dev-url.sh"

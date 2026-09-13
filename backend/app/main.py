@@ -20,6 +20,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.energy.router import router as energy_router
 from app.modules.energy.ws import router as energy_ws_router
 from app.modules.onboarding.router import router as onboarding_router
+from app.webui import router as webui_router
 
 logger = logging.getLogger("volta.app")
 
@@ -107,6 +108,7 @@ app.include_router(oauth_router)        # /auth/google/*
 app.include_router(onboarding_router)   # /onboarding/*
 app.include_router(energy_router)       # /energy/*
 app.include_router(energy_ws_router)    # /ws/energy
+app.include_router(webui_router)        # /ui  temporary energy HTML (not production)
 
 
 @app.get("/health", tags=["health"])

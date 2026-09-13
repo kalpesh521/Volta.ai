@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Volta energy console (temp)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #0B1D1C; --surface: #12302C; --surface-2: #17403C;
+      --sun: #F4A93B; --cyan: #4FD3C4; --coral: #FF6B5E; --green: #8FD694;
+      --text: #F2EFE6; --dim: #9FB8B3; --border: rgba(242,239,230,.1);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh; color: var(--text); font-family: Inter, sans-serif;
+      background: radial-gradient(circle at 12% -10%, rgba(244,169,59,.18), transparent 34%), var(--ink);
+    }
+    .wrap { width: min(1200px, calc(100% - 28px)); margin: 0 auto; padding: 20px 0 40px; }
+    .display { font-family: "Space Grotesk", sans-serif; }
+    .mono { font-family: "IBM Plex Mono", monospace; }
+    header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
+    h1 { font-size: 22px; letter-spacing: -.03em; }
+    .note { color: var(--dim); font-size: 13px; max-width: 52ch; }
+    .note code { color: var(--sun); }
+    .banner {
+      font-size: 12px; color: #1a1200; background: var(--sun); font-weight: 600;
+      display: inline-block; border-radius: 999px; padding: 3px 10px; margin-bottom: 8px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    input, select, button, textarea {
+      font: inherit; border-radius: 10px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text); padding: 8px 12px;
+    }
+    button { cursor: pointer; font-weight: 600; }
+    button.primary { background: var(--sun); color: #1a1200; border: none; }
+    button.ghost { background: transparent; color: var(--cyan); }
+    .chip { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; font-size: 12px; color: var(--dim); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: #888; margin-right: 6px; }
+    .dot.ok { background: var(--green); } .dot.warn { background: var(--sun); } .dot.bad { background: var(--coral); }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+    @media (max-width: 900px) { .kpis { grid-template-columns: 1fr 1fr; } }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px; }
+    .kpi .label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+    .kpi .value { font-size: 32px; margin: 6px 0 2px; }
+    .kpi .sub { font-size: 12px; color: var(--dim); }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+    .tabs button[aria-selected="true"] { background: var(--cyan); color: #06221f; border: none; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+    th { color: var(--dim); font-weight: 500; }
+    pre { background: #081614; border-radius: 12px; padding: 12px; overflow: auto; font-size: 12px; max-height: 420px; }
+    .err { color: var(--coral); font-size: 13px; min-height: 1.2em; }
+    .login { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <span class="banner">Temporary HTML · React later</span>
+        <h1 class="display">Energy API console</h1>
+        <p class="note">Same origin as FastAPI (<code>/energy/*</code>, <code>/ws/energy</code>). Contract for the future React app. Simulator dashboard stays at <code>:8765</code>.</p>
+      </div>
+      <div class="row">
+        <span class="chip"><i id="liveDot" class="dot"></i><span id="liveLabel">Idle</span></span>
+        <span class="chip" id="houseChip">no home</span>
+        <span class="chip" id="clockChip">--:--</span>
+      </div>
+    </header>
+
+    <form class="login card" id="loginForm">
+      <input id="email" type="email" placeholder="email" autocomplete="username" required>
+      <input id="password" type="password" placeholder="password" autocomplete="current-password" required>
+      <button class="primary" type="submit">Login</button>
+      <button class="ghost" type="button" id="logoutBtn">Logout</button>
+      <select id="homeSelect" title="Household"></select>
+    </form>
+    <p class="err" id="authErr"></p>
+
+    <section class="kpis">
+      <article class="card kpi"><div class="label">Solar kW</div><div class="value display mono" id="solarKw">—</div><div class="sub" id="solarSub">today — kWh</div></article>
+      <article class="card kpi"><div class="label">Load kW</div><div class="value display mono" id="loadKw">—</div><div class="sub" id="loadSub">today — kWh</div></article>
+      <article class="card kpi"><div class="label">Battery SOC</div><div class="value display mono" id="socPct">—</div><div class="sub" id="battSub">—</div></article>
+      <article class="card kpi"><div class="label">Grid</div><div class="value display mono" id="gridKw">—</div><div class="sub" id="gridSub">—</div></article>
+    </section>
+
+    <nav class="tabs" id="tabs">
+      <button type="button" data-tab="live" aria-selected="true">Live + WS</button>
+      <button type="button" data-tab="history">History</button>
+      <button type="button" data-tab="daily">Daily</button>
+      <button type="button" data-tab="hourly">Hourly</button>
+      <button type="button" data-tab="profile">Profile</button>
+      <button type="button" data-tab="slices">Battery / grid / devices / weather</button>
+      <button type="button" data-tab="raw">Raw JSON</button>
+    </nav>
+
+    <section id="panel-live" class="panel active card">
+      <p class="note">GET <code>/energy/me/live</code> then WebSocket <code>/ws/energy</code>.</p>
+      <div id="flow" class="row" style="margin-top:12px;color:var(--dim);font-size:13px"></div>
+      <div id="devices" style="margin-top:12px"></div>
+    </section>
+    <section id="panel-history" class="panel card"><table><thead><tr><th>Time</th><th>Solar</th><th>Load</th><th>SOC</th><th>Import</th><th>Export</th></tr></thead><tbody id="histBody"></tbody></table></section>
+    <section id="panel-daily" class="panel card"><pre id="dailyPre">Open this tab after login.</pre></section>
+    <section id="panel-hourly" class="panel card"><pre id="hourlyPre">Open this tab after login.</pre></section>
+    <section id="panel-profile" class="panel card"><pre id="profilePre">Open this tab after login.</pre></section>
+    <section id="panel-slices" class="panel grid2">
+      <article class="card"><h2 class="display">Battery</h2><pre id="batteryPre">—</pre></article>
+      <article class="card"><h2 class="display">Grid</h2><pre id="gridPre">—</pre></article>
+      <article class="card"><h2 class="display">Devices</h2><pre id="devicesPre">—</pre></article>
+      <article class="card"><h2 class="display">Weather</h2><pre id="weatherPre">—</pre></article>
+    </section>
+    <section id="panel-raw" class="panel card"><pre id="rawPre">{}</pre></section>
+  </div>
+
+  <script>
+    const TOKEN_KEY = "volta_access_token";
+    const params = new URLSearchParams(location.search);
+    const sameOrigin = location.port === "8000" || location.port === "";
+    const API = sameOrigin ? "" : "http://127.0.0.1:8000";
+    const WS_BASE = (sameOrigin ? location.origin : "http://127.0.0.1:8000").replace(/^http/, "ws");
+
+    const state = { token: params.get("token") || sessionStorage.getItem(TOKEN_KEY) || "", household: "", socket: null };
+
+    const $ = (id) => document.getElementById(id);
+    const num = (v, d = 2) => Number(v || 0).toFixed(d);
+
+    function setLive(ok, label) {
+      $("liveDot").className = "dot " + (ok ? "ok" : "warn");
+      $("liveLabel").textContent = label;
+    }
+
+    function pretty(obj) { return JSON.stringify(obj, null, 2); }
+
+    async function api(path, opts) {
+      const headers = Object.assign({ "Content-Type": "application/json" }, (opts && opts.headers) || {});
+      if (state.token) headers.Authorization = "Bearer " + state.token;
+      const res = await fetch(API + path, Object.assign({}, opts, { headers }));
+      const text = await res.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
+      if (!res.ok) {
+        const msg = (body && body.error && body.error.message) || (body && body.detail) || res.statusText;
+        throw new Error(path + " " + res.status + ": " + msg);
+      }
+      return body;
+    }
+
+    function hidQuery() {
+      return state.household ? ("?household_id=" + encodeURIComponent(state.household)) : "";
+    }
+
+    function paintLive(row) {
+      if (!row) return;
+      const solar = row.solar || {};
+      const load = row.load || {};
+      const battery = row.battery || {};
+      const grid = row.grid || {};
+      const solarKw = solar.power_kw != null ? solar.power_kw : row.solar_power_kw;
+      const loadKw = load.power_kw != null ? load.power_kw : row.home_load_power_kw;
+      const soc = battery.soc_percent != null ? battery.soc_percent : row.battery_soc_percent;
+      const gImp = grid.import_power_kw != null ? grid.import_power_kw : row.grid_import_power_kw;
+      const gExp = grid.export_power_kw != null ? grid.export_power_kw : row.grid_export_power_kw;
+      $("solarKw").textContent = num(solarKw);
+      $("solarSub").textContent = "today " + num(solar.energy_today_kwh != null ? solar.energy_today_kwh : row.solar_energy_today_kwh) + " kWh";
+      $("loadKw").textContent = num(loadKw);
+      $("loadSub").textContent = "today " + num(load.consumption_today_kwh != null ? load.consumption_today_kwh : row.home_consumption_today_kwh) + " kWh";
+      $("socPct").textContent = num(soc, 1) + "%";
+      $("battSub").textContent = battery.status || row.battery_status || "—";
+      $("gridKw").textContent = num((gExp || 0) > 0 ? gExp : gImp);
+      $("gridSub").textContent = (grid.status || row.grid_status || "—");
+      $("houseChip").textContent = row.household_id || state.household || "home";
+      $("clockChip").textContent = row.timestamp ? new Date(row.timestamp).toLocaleTimeString("en-IN") : "—";
+      const loc = row.location;
+      const locLabel = loc && (loc.label || loc.name);
+      if (locLabel) $("houseChip").title = locLabel;
+      const flows = row.flows || {};
+      $("flow").textContent =
+        "solar→home " + num(flows.solar_to_home_kw != null ? flows.solar_to_home_kw : row.solar_to_home_kw) +
+        " · batt→home " + num(flows.battery_to_home_kw != null ? flows.battery_to_home_kw : row.battery_to_home_kw) +
+        " · balance " + (row.energy_balance_status || "—");
+      const devices = row.devices || [];
+      $("devices").innerHTML = devices.length
+        ? devices.map((d) => (d.device_name || d.device_id) + " " + num(d.current_power_kw) + " kW (" + (d.current_state || "") + ")").join("<br>")
+        : "";
+      $("rawPre").textContent = pretty(row);
+    }
+
+    function connectWs() {
+      if (state.socket) { try { state.socket.close(); } catch (e) { /* ignore */ } }
+      if (!state.token) return;
+      const url = new URL(WS_BASE + "/ws/energy");
+      url.searchParams.set("token", state.token);
+      if (state.household && state.household !== "home_001") url.searchParams.set("household_id", state.household);
+      const ws = new WebSocket(url.toString());
+      state.socket = ws;
+      ws.onopen = () => setLive(true, "WS connecting");
+      ws.onmessage = (ev) => {
+        let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === "error") { setLive(false, msg.code || "WS error"); return; }
+        if (msg.type === "hello") { setLive(true, "Live · " + (msg.household_id || "backend")); if (msg.household_id) $("houseChip").textContent = msg.household_id; return; }
+        if (msg.type === "ping") return;
+        if (msg.type === "telemetry" && msg.record) { setLive(true, "Live · backend"); paintLive(msg.live || msg.record); }
+      };
+      ws.onclose = () => { setLive(false, "WS closed"); };
+      ws.onerror = () => setLive(false, "WS error");
+    }
+
+    async function loadHomes() {
+      const data = await api("/energy/me/homes");
+      const select = $("homeSelect");
+      select.innerHTML = "";
+      (data.homes || []).forEach((home) => {
+        const opt = document.createElement("option");
+        opt.value = home.household_id;
+        opt.textContent = (home.is_primary ? "★ " : "") + (home.location || home.household_id) + (home.is_complete ? "" : " (incomplete)");
+        opt.disabled = !home.is_complete;
+        if (home.household_id === data.primary_household_id) opt.selected = true;
+        select.appendChild(opt);
+      });
+      state.household = select.value || data.primary_household_id || "";
+    }
+
+    async function refreshLive() {
+      const live = await api("/energy/me/live" + hidQuery());
+      paintLive(live);
+    }
+
+    async function loadHistory() {
+      const data = await api("/energy/me/history?limit=40" + (state.household ? "&household_id=" + encodeURIComponent(state.household) : ""));
+      $("histBody").innerHTML = (data.records || []).map((r) => {
+        const t = r.timestamp ? new Date(r.timestamp).toLocaleTimeString("en-IN") : "—";
+        return "<tr><td class='mono'>" + t + "</td><td class='mono'>" + num(r.solar_power_kw) + "</td><td class='mono'>" +
+          num(r.home_load_power_kw) + "</td><td class='mono'>" + num(r.battery_soc_percent, 1) + "</td><td class='mono'>" +
+          num(r.grid_import_power_kw) + "</td><td class='mono'>" + num(r.grid_export_power_kw) + "</td></tr>";
+      }).join("");
+      $("rawPre").textContent = pretty(data);
+    }
+
+    async function loadTab(name) {
+      if (!state.token) return;
+      $("authErr").textContent = "";
+      try {
+        if (name === "live") { await refreshLive(); connectWs(); }
+        if (name === "history") await loadHistory();
+        if (name === "daily") $("dailyPre").textContent = pretty(await api("/energy/me/daily" + hidQuery()));
+        if (name === "hourly") $("hourlyPre").textContent = pretty(await api("/energy/me/hourly" + hidQuery()));
+        if (name === "profile") $("profilePre").textContent = pretty(await api("/energy/me/profile" + hidQuery()));
+        if (name === "slices" && state.household) {
+          const id = encodeURIComponent(state.household);
+          $("batteryPre").textContent = pretty(await api("/energy/" + id + "/battery"));
+          $("gridPre").textContent = pretty(await api("/energy/" + id + "/grid"));
+          $("devicesPre").textContent = pretty(await api("/energy/" + id + "/devices"));
+          $("weatherPre").textContent = pretty(await api("/energy/" + id + "/weather"));
+        }
+      } catch (err) {
+        $("authErr").textContent = err.message;
+      }
+    }
+
+    $("tabs").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-tab]");
+      if (!btn) return;
+      document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", b === btn ? "true" : "false"));
+      document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + btn.dataset.tab));
+      loadTab(btn.dataset.tab);
+    });
+
+    $("homeSelect").addEventListener("change", () => {
+      state.household = $("homeSelect").value;
+      const active = document.querySelector(".tabs button[aria-selected='true']");
+      loadTab(active ? active.dataset.tab : "live");
+    });
+
+    $("loginForm").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      $("authErr").textContent = "";
+      try {
+        const body = await api("/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: $("email").value, password: $("password").value }),
+        });
+        state.token = body.access_token;
+        sessionStorage.setItem(TOKEN_KEY, state.token);
+        await loadHomes();
+        await loadTab("live");
+      } catch (err) {
+        $("authErr").textContent = err.message;
+      }
+    });
+
+    $("logoutBtn").addEventListener("click", () => {
+      state.token = "";
+      sessionStorage.removeItem(TOKEN_KEY);
+      if (state.socket) try { state.socket.close(); } catch (e) { /* ignore */ }
+      setLive(false, "Logged out");
+    });
+
+    (async function boot() {
+      if (params.get("email")) $("email").value = params.get("email");
+      if (!state.token) { setLive(false, "Login required"); return; }
+      sessionStorage.setItem(TOKEN_KEY, state.token);
+      try {
+        await loadHomes();
+        await loadTab("live");
+      } catch (err) {
+        $("authErr").textContent = err.message + " — token may have expired. Login again.";
+        setLive(false, "Auth failed");
+      }
+    })();
+  </script>
+</body>
+</html>

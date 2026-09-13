@@ -59,6 +59,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path in ("/", "/dashboard", "/suryaa-dashboard.html"):
             self._serve_html()
             return
+        if path in ("/energy", "/ui/energy", "/energy-console.html"):
+            self._serve_energy_console()
+            return
         if path == "/api/latest":
             latest = bus.latest()
             self._send(*_json_bytes({"ok": latest is not None, "record": latest}))
@@ -104,6 +107,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         body = DASHBOARD_HTML.read_bytes()
         self._send(200, body, "text/html; charset=utf-8")
+
+    def _serve_energy_console(self) -> None:
+        path = PROJECT_ROOT / "frontend" / "public" / "energy-console.html"
+        if not path.exists():
+            self._send(404, b"energy console missing", "text/plain")
+            return
+        self._send(200, path.read_bytes(), "text/html; charset=utf-8")
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
