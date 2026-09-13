@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     INGEST_HTTP_ENABLED: bool = True
     ENERGY_HISTORY_MAX_READINGS: int = 2880
     ENERGY_BALANCE_TOLERANCE_KW: float = 0.05
+    # Default DISCOM-style rates used when onboarding omits numeric tariff.
+    # Assistant savings and profile.tariff_rate read stored grid_configs first.
+    DEFAULT_ENERGY_CHARGE_INR_PER_KWH: float = 8.50
+    DEFAULT_EXPORT_CREDIT_INR_PER_KWH: float = 6.20
+    # Non-critical appliances at or above this nameplate are "important".
+    DEVICE_IMPORTANT_POWER_KW: float = 1.50
 
     # TimescaleDB holds telemetry history. Separate from DATABASE_URL (auth/onboarding).
     TIMESCALE_DATABASE_URL: str = (

@@ -20,6 +20,7 @@ from app.modules.onboarding.enums import (
     MeterType,
     OnboardingStep,
     PanelType,
+    PrimaryGoal,
     SystemType,
     TariffType,
 )
@@ -39,6 +40,10 @@ class SystemStepIn(BaseModel):
     # Step 2
     inverter_brand:       InverterBrand
     inverter_capacity_kw: Decimal     = Field(ge=1, description="Installed system capacity in kW")
+    primary_goal: PrimaryGoal = Field(
+        default=PrimaryGoal.MAXIMIZE_SELF_CONSUMPTION,
+        description="What Suryaa should optimize for this home",
+    )
 
     @field_validator("panel_qty")
     @classmethod
@@ -71,6 +76,16 @@ class GridStepIn(BaseModel):
     sanctioned_load_kw: Decimal  = Field(ge=1, description="Contracted grid capacity in kW")
     tariff_type:        TariffType
     discom:             str | None = Field(default=None, max_length=100, description="Utility / DISCOM name (optional)")
+    energy_charge_inr_per_kwh: Decimal | None = Field(
+        default=None,
+        ge=0,
+        description="Import energy charge in INR per kWh. Omit to keep existing / use the default.",
+    )
+    export_credit_inr_per_kwh: Decimal | None = Field(
+        default=None,
+        ge=0,
+        description="Export credit in INR per kWh. Omit to keep existing / use the default.",
+    )
 
 
 # ── Step 5: Appliances ────────────────────────────────────────────────────────
@@ -114,6 +129,8 @@ class GridConfigOut(BaseModel):
     sanctioned_load_kw: Decimal
     tariff_type:        str
     discom:             str | None
+    energy_charge_inr_per_kwh: Decimal
+    export_credit_inr_per_kwh: Decimal
 
     model_config = {"from_attributes": True}
 
@@ -135,6 +152,7 @@ class SolarSystemOut(BaseModel):
     avg_monthly_bill:     Decimal | None
     inverter_brand:       str
     inverter_capacity_kw: Decimal
+    primary_goal:         str = PrimaryGoal.MAXIMIZE_SELF_CONSUMPTION.value
     last_step:            str
     is_complete:          bool
     is_primary:           bool = False
@@ -158,6 +176,7 @@ class OnboardingStatusOut(BaseModel):
     steps_completed:   list[str]
     steps_required:    list[str]     # all steps the user must complete (system-type aware)
     steps_remaining:   list[str]     # steps_required minus steps_completed
+    primary_goal:      str | None = None
 
 
 class OnboardingSummaryOut(BaseModel):

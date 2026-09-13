@@ -52,6 +52,13 @@ class TariffType(str, enum.Enum):
     SLAB_BASED  = "Slab-based"
 
 
+class PrimaryGoal(str, enum.Enum):
+    """What the assistant should optimize for this home."""
+    MAXIMIZE_SELF_CONSUMPTION = "maximize_self_consumption"
+    MINIMIZE_BILL = "minimize_bill"
+    PRESERVE_BACKUP = "preserve_backup"
+
+
 # ── Step 5: Appliances ────────────────────────────────────────────────────────
 
 class ApplianceKey(str, enum.Enum):

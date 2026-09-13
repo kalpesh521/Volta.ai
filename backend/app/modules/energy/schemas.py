@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.modules.energy.insights import derive_device_priority
+
 
 class ExtensibleModel(BaseModel):
     """Records that may gain optional keys over time."""
@@ -93,6 +95,14 @@ class DeviceReading(ExtensibleModel):
     energy_interval_kwh: float = Field(ge=0)
     critical: bool
     controllable: bool
+    device_priority: str = "flexible"
+
+    @model_validator(mode="after")
+    def _stamp_priority(self) -> DeviceReading:
+        self.device_priority = derive_device_priority(
+            critical=self.critical, rated_power_kw=self.rated_power_kw
+        )
+        return self
 
 
 class EnergyFlows(ExtensibleModel):
@@ -277,6 +287,7 @@ class LiveEnergyOut(BaseModel):
     energy_balance_valid: bool
     scenario: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    text: str = ""
 
 
 class HistoryOut(BaseModel):
@@ -314,6 +325,12 @@ class DailySummaryOut(EnergyTotals):
     reading_count: int
     period_start: datetime | None = None
     period_end: datetime | None = None
+    peak_load_kw: float = 0.0
+    estimated_savings: float | None = None
+    tariff_rate: float | None = None
+    export_credit_inr_per_kwh: float | None = None
+    savings_method: str | None = None
+    text: str = ""
 
 
 class HourlyBucketOut(EnergyTotals):
@@ -340,7 +357,15 @@ class SimulatorDeviceSpec(BaseModel):
     rated_power_kw: float = Field(ge=0)
     critical: bool = False
     controllable: bool = True
+    device_priority: str = "flexible"
     schedule: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _stamp_priority(self) -> SimulatorDeviceSpec:
+        self.device_priority = derive_device_priority(
+            critical=self.critical, rated_power_kw=self.rated_power_kw
+        )
+        return self
 
 
 class SimulatorProfileOut(BaseModel):
@@ -361,9 +386,26 @@ class SimulatorProfileOut(BaseModel):
     grid_available: bool
     zero_export_mode: bool
     location: str | None = None
+    primary_goal: str = "maximize_self_consumption"
+    tariff_type: str | None = None
+    tariff_rate: float | None = None
+    export_credit_inr_per_kwh: float | None = None
+    meter_type: str | None = None
     devices: list[SimulatorDeviceSpec] = Field(default_factory=list)
-    schema_version: str = "1.0.0"
+    text: str = ""
+    schema_version: str = "1.1.0"
 
 
 class SimulatorProfileListOut(BaseModel):
     profiles: list[SimulatorProfileOut]
+
+
+class AssistantContextOut(BaseModel):
+    """Combined live + daily + profile payload for the energy assistant."""
+
+    household_id: str
+    generated_at: datetime
+    profile: SimulatorProfileOut
+    live: LiveEnergyOut | None = None
+    daily: DailySummaryOut | None = None
+    text: str

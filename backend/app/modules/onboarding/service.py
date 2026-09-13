@@ -13,6 +13,9 @@ Key rules enforced here (not in the router):
 import uuid
 from datetime import datetime, timezone
 
+from decimal import Decimal
+
+from app.core.config import settings
 from app.core.exceptions import (
     ForbiddenError,
     OnboardingAlreadyCompleteError,
@@ -34,6 +37,24 @@ from app.modules.onboarding.schemas import (
 # System types that require battery / grid steps
 _NEEDS_BATTERY = {SystemType.OFF_GRID.value, SystemType.HYBRID.value}
 _NEEDS_GRID    = {SystemType.ON_GRID.value,  SystemType.HYBRID.value}
+
+
+def _default_energy_charge() -> Decimal:
+    return Decimal(str(settings.DEFAULT_ENERGY_CHARGE_INR_PER_KWH))
+
+
+def _default_export_credit() -> Decimal:
+    return Decimal(str(settings.DEFAULT_EXPORT_CREDIT_INR_PER_KWH))
+
+
+def _resolve_rate(
+    incoming: Decimal | None, existing: Decimal | None, default: Decimal
+) -> Decimal:
+    if incoming is not None:
+        return incoming
+    if existing is not None:
+        return existing
+    return default
 
 
 class OnboardingService:
@@ -67,6 +88,7 @@ class OnboardingService:
                 inverter_brand=data.inverter_brand.value,
                 inverter_capacity_kw=data.inverter_capacity_kw,
                 is_primary=(count == 0),
+                primary_goal=data.primary_goal.value,
             )
 
         if household_id:
@@ -85,6 +107,7 @@ class OnboardingService:
                 inverter_brand=data.inverter_brand.value,
                 inverter_capacity_kw=data.inverter_capacity_kw,
                 is_primary=True,
+                primary_goal=data.primary_goal.value,
             )
         return await self._apply_system_update(existing, data)
 
@@ -105,6 +128,7 @@ class OnboardingService:
             avg_monthly_bill=data.avg_monthly_bill,
             inverter_brand=data.inverter_brand.value,
             inverter_capacity_kw=data.inverter_capacity_kw,
+            primary_goal=data.primary_goal.value,
             last_step=OnboardingStep.SYSTEM.value,
         )
         return system
@@ -172,12 +196,23 @@ class OnboardingService:
                 "Only On-grid and Hybrid systems connect to the grid."
             )
 
+        existing = system.grid_config
         await self.repo.upsert_grid(
             system=system,
             meter_type=data.meter_type.value,
             sanctioned_load_kw=data.sanctioned_load_kw,
             tariff_type=data.tariff_type.value,
             discom=data.discom,
+            energy_charge_inr_per_kwh=_resolve_rate(
+                data.energy_charge_inr_per_kwh,
+                existing.energy_charge_inr_per_kwh if existing else None,
+                _default_energy_charge(),
+            ),
+            export_credit_inr_per_kwh=_resolve_rate(
+                data.export_credit_inr_per_kwh,
+                existing.export_credit_inr_per_kwh if existing else None,
+                _default_export_credit(),
+            ),
         )
         await self.repo.update_system(system, last_step=OnboardingStep.GRID.value)
         return system
@@ -253,6 +288,7 @@ class OnboardingService:
                 steps_completed=[],
                 steps_required=["system"],
                 steps_remaining=["system"],
+                primary_goal=None,
             )
 
         completed  = self._completed_steps(system)
@@ -268,6 +304,7 @@ class OnboardingService:
             steps_completed=completed,
             steps_required=required,
             steps_remaining=remaining,
+            primary_goal=system.primary_goal,
         )
 
     async def get_summary(

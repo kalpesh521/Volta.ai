@@ -16,6 +16,16 @@ from zoneinfo import ZoneInfo
 from simulator.config import SimulatorConfig
 from simulator.models import DeviceReading, WeatherRecord
 
+_IMPORTANT_POWER_KW = 1.5
+
+
+def _device_priority(critical: bool, rated_power_kw: float) -> str:
+    if critical:
+        return "critical"
+    if rated_power_kw >= _IMPORTANT_POWER_KW:
+        return "important"
+    return "flexible"
+
 
 def _parse_hhmm(value: str) -> time:
     hour, minute = value.split(":")
@@ -44,17 +54,20 @@ class DeviceEngine:
             on, power = self._is_on(spec, local, weather)
             interval_kwh = power * self.config.interval_hours
             device_id = spec["device_id"]
+            rated = float(spec["rated_power_kw"])
+            critical = bool(spec.get("critical", False))
             readings.append(
                 DeviceReading(
                     device_id=device_id,
                     device_name=spec["device_name"],
                     device_type=spec["device_type"],
-                    rated_power_kw=float(spec["rated_power_kw"]),
+                    rated_power_kw=rated,
                     current_state="on" if on else "off",
                     current_power_kw=round(power, 4),
                     energy_interval_kwh=round(interval_kwh, 6),
-                    critical=bool(spec.get("critical", False)),
+                    critical=critical,
                     controllable=bool(spec.get("controllable", True)),
+                    device_priority=_device_priority(critical, rated),
                 )
             )
         return readings

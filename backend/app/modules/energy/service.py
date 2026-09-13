@@ -13,7 +13,17 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.exceptions import EnergyNotFoundError
+from app.modules.energy.insights import (
+    combined_text,
+    daily_summary_text,
+    estimated_savings_inr,
+    live_snapshot_text,
+    peak_load_kw,
+    tariff_from_system,
+)
+from app.modules.energy.profile import build_simulator_profile
 from app.modules.energy.schemas import (
+    AssistantContextOut,
     BatteryStatusOut,
     DailySummaryOut,
     DevicesOut,
@@ -33,6 +43,7 @@ from app.modules.energy.schemas import (
 from app.modules.energy.store import EnergyStore
 from app.modules.energy.timescale_store import TimescaleTelemetryStore
 from app.modules.energy.redis_live import RedisLiveStore
+from app.modules.onboarding.models import SolarSystem
 
 logger = logging.getLogger("volta.energy")
 
@@ -111,6 +122,25 @@ def normalize_record(record: TelemetryRecord, tolerance_kw: float) -> TelemetryR
 
     normalized = TelemetryRecord.model_validate(payload)
     return apply_energy_balance(normalized, tolerance_kw)
+
+
+def _peak_load_kw(records: list[TelemetryRecord]) -> float:
+    return peak_load_kw(row.home_load_power_kw for row in records)
+
+
+def _live_text(record: TelemetryRecord) -> str:
+    return live_snapshot_text(
+        timestamp=record.timestamp,
+        solar_kw=record.solar_power_kw,
+        load_kw=record.home_load_power_kw,
+        battery_soc_percent=record.battery_soc_percent,
+        battery_status=record.battery_status,
+        grid_status=record.grid_status,
+        import_kw=record.grid_import_power_kw,
+        export_kw=record.grid_export_power_kw,
+        energy_balance_status=record.energy_balance_status,
+        data_quality=record.data_quality,
+    )
 
 
 def _totals(records: list[TelemetryRecord]) -> EnergyTotals:
@@ -276,6 +306,7 @@ def to_live(record: TelemetryRecord) -> LiveEnergyOut:
         energy_balance_valid=record.energy_balance_valid,
         scenario=str(scenario) if scenario else None,
         warnings=[str(item) for item in warnings],
+        text=_live_text(record),
     )
 
 
@@ -367,7 +398,12 @@ class EnergyService:
             records=records,
         )
 
-    async def get_daily(self, household_id: str, day: date | None = None) -> DailySummaryOut:
+    async def get_daily(
+        self,
+        household_id: str,
+        day: date | None = None,
+        system: SolarSystem | None = None,
+    ) -> DailySummaryOut:
         latest = await self._require_latest(household_id)
         target = day or _local_date(latest.timestamp)
         tz = latest.timestamp.tzinfo or timezone.utc
@@ -379,6 +415,27 @@ class EnergyService:
             history = await self.store.get_history(household_id)
             rows = [row for row in history if _local_date(row.timestamp) == target]
         totals = _totals(rows)
+        tariff = tariff_from_system(system)
+        savings = estimated_savings_inr(
+            solar_generation_kwh=totals.solar_generation_kwh,
+            grid_export_kwh=totals.grid_export_kwh,
+            tariff=tariff,
+        )
+        peak = _peak_load_kw(rows)
+        narrative = daily_summary_text(
+            day=target,
+            timezone_name=_timezone_name(latest.timestamp),
+            reading_count=len(rows),
+            solar_generation_kwh=totals.solar_generation_kwh,
+            home_consumption_kwh=totals.home_consumption_kwh,
+            grid_import_kwh=totals.grid_import_kwh,
+            grid_export_kwh=totals.grid_export_kwh,
+            battery_charge_kwh=totals.battery_charge_kwh,
+            battery_discharge_kwh=totals.battery_discharge_kwh,
+            peak_load=peak,
+            estimated_savings=savings,
+            tariff=tariff,
+        )
         return DailySummaryOut(
             household_id=household_id,
             date=target,
@@ -386,6 +443,12 @@ class EnergyService:
             reading_count=len(rows),
             period_start=rows[0].timestamp if rows else None,
             period_end=rows[-1].timestamp if rows else None,
+            peak_load_kw=peak,
+            estimated_savings=savings,
+            tariff_rate=tariff.tariff_rate,
+            export_credit_inr_per_kwh=tariff.export_credit_inr_per_kwh,
+            savings_method=tariff.savings_method,
+            text=narrative,
             **totals.model_dump(),
         )
 
@@ -426,4 +489,36 @@ class EnergyService:
             date=target,
             timezone=_timezone_name(latest.timestamp),
             buckets=out,
+        )
+
+    async def get_assistant_context(
+        self,
+        system: SolarSystem,
+        day: date | None = None,
+    ) -> AssistantContextOut:
+        """Profile always; live and daily when ticks exist."""
+        profile = build_simulator_profile(system)
+        live: LiveEnergyOut | None = None
+        daily: DailySummaryOut | None = None
+        try:
+            live = await self.get_live(system.household_id, system.location)
+        except EnergyNotFoundError:
+            live = None
+        try:
+            daily = await self.get_daily(
+                system.household_id, day=day, system=system
+            )
+        except EnergyNotFoundError:
+            daily = None
+        return AssistantContextOut(
+            household_id=system.household_id,
+            generated_at=datetime.now(timezone.utc),
+            profile=profile,
+            live=live,
+            daily=daily,
+            text=combined_text(
+                profile.text,
+                live.text if live else None,
+                daily.text if daily else None,
+            ),
         )

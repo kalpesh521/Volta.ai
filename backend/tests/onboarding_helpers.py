@@ -19,14 +19,20 @@ async def complete_hybrid_onboarding(
     appliances: list[dict] | None = None,
     household_id: str | None = None,
     create_new: bool = False,
+    primary_goal: str | None = None,
+    energy_charge_inr_per_kwh: float | None = None,
+    export_credit_inr_per_kwh: float | None = None,
 ) -> str:
+    payload = dict(HYBRID_SYSTEM)
+    if primary_goal:
+        payload["primary_goal"] = primary_goal
     params = {"household_id": household_id} if household_id else None
     if create_new:
-        created = await client.post("/onboarding/homes", json=HYBRID_SYSTEM, headers=headers)
+        created = await client.post("/onboarding/homes", json=payload, headers=headers)
         assert created.status_code == 201, created.text
     else:
         created = await client.put(
-            "/onboarding/system", json=HYBRID_SYSTEM, headers=headers, params=params
+            "/onboarding/system", json=payload, headers=headers, params=params
         )
         assert created.status_code == 200, created.text
     hid = created.json()["household_id"]
@@ -41,14 +47,19 @@ async def complete_hybrid_onboarding(
     )
     assert battery.status_code == 200, battery.text
 
+    grid_body: dict = {
+        "meter_type": "Net metering",
+        "sanctioned_load_kw": 5,
+        "tariff_type": "Flat rate",
+        "discom": "MSEDCL",
+    }
+    if energy_charge_inr_per_kwh is not None:
+        grid_body["energy_charge_inr_per_kwh"] = energy_charge_inr_per_kwh
+    if export_credit_inr_per_kwh is not None:
+        grid_body["export_credit_inr_per_kwh"] = export_credit_inr_per_kwh
     grid = await client.put(
         "/onboarding/grid",
-        json={
-            "meter_type": "Net metering",
-            "sanctioned_load_kw": 5,
-            "tariff_type": "Flat rate",
-            "discom": "MSEDCL",
-        },
+        json=grid_body,
         headers=headers,
         params=step_params,
     )

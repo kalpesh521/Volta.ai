@@ -229,6 +229,8 @@ async def test_live_and_slice_endpoints_after_ingest(client: AsyncClient):
     assert body["battery"]["status"] == "charging"
     assert body["grid"]["voltage_v"] == 230.4
     assert body["devices"][0]["device_name"] == "Refrigerator"
+    assert body["devices"][0]["device_priority"] == "critical"
+    assert "solar" in body["text"]
     assert body["weather"]["temperature_c"] == 29.0
     assert body["scenario"] == "normal_day"
     assert body["location"]["name"] == "Pune"
@@ -321,6 +323,12 @@ async def test_daily_and_hourly_summaries(client: AsyncClient):
     assert abs(body["solar_generation_kwh"] - expected_solar) < 1e-6
     assert body["battery_charge_kwh"] > 0
     assert body["battery_discharge_kwh"] > 0
+    assert body["peak_load_kw"] == 2.0
+    assert body["tariff_rate"] == 8.5
+    assert body["export_credit_inr_per_kwh"] == 6.2
+    assert body["savings_method"] == "self_consumed_solar_plus_export_credit"
+    assert body["estimated_savings"] == round(expected_solar * 8.5, 2)
+    assert "Peak load" in body["text"]
 
     me_daily = await client.get(
         "/energy/me/daily",
@@ -405,7 +413,16 @@ async def test_simulator_profile_from_onboarding(client: AsyncClient):
     assert keys == {"refrigerator", "air_conditioner"}
     fridge = next(d for d in body["devices"] if d["device_type"] == "refrigerator")
     assert fridge["critical"] is True
+    assert fridge["device_priority"] == "critical"
+    ac = next(d for d in body["devices"] if d["device_type"] == "air_conditioner")
+    assert ac["device_priority"] == "important"
     assert body["location"] == "Pune, India"
+    assert body["primary_goal"] == "maximize_self_consumption"
+    assert body["tariff_type"] == "Flat rate"
+    assert body["tariff_rate"] == 8.5
+    assert body["export_credit_inr_per_kwh"] == 6.2
+    assert body["schema_version"] == "1.1.0"
+    assert "Goal:" in body["text"]
 
     ingest = await client.get(
         f"/energy/{household_id}/profile",
@@ -505,3 +522,65 @@ async def test_live_replaces_gps_coords_with_onboarding_city(client: AsyncClient
     live = await client.get("/energy/me/live", headers=headers)
     assert live.status_code == 200
     assert live.json()["location"]["name"] == "Pune, India"
+
+
+async def test_assistant_context_without_telemetry(client: AsyncClient):
+    headers = await _auth_headers(client, email="context-empty@example.com")
+    household_id = await complete_hybrid_onboarding(client, headers)
+    response = await client.get("/energy/me/context", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["household_id"] == household_id
+    assert body["live"] is None
+    assert body["daily"] is None
+    assert body["profile"]["tariff_rate"] == 8.5
+    assert "Goal:" in body["text"]
+    assert body["profile"]["text"] in body["text"]
+
+
+async def test_assistant_context_with_ticks_and_custom_tariff(client: AsyncClient):
+    headers = await _auth_headers(client, email="context-full@example.com")
+    household_id = await complete_hybrid_onboarding(
+        client,
+        headers,
+        primary_goal="minimize_bill",
+        energy_charge_inr_per_kwh=10.0,
+        export_credit_inr_per_kwh=4.0,
+    )
+    ts = datetime(2026, 8, 29, 12, 0, tzinfo=TZ)
+    await client.post(
+        "/energy/ingest",
+        json=_tick(
+            ts,
+            household_id=household_id,
+            solar_kw=3.0,
+            load_kw=1.0,
+            charge_kw=0.0,
+            export_kw=2.0,
+        ),
+        headers=INGEST_HEADERS,
+    )
+    context = await client.get(
+        "/energy/me/context",
+        params={"date": "2026-08-29"},
+        headers=headers,
+    )
+    assert context.status_code == 200
+    body = context.json()
+    assert body["live"]["solar"]["power_kw"] == 3.0
+    daily = body["daily"]
+    assert daily["peak_load_kw"] == 1.0
+    assert daily["tariff_rate"] == 10.0
+    assert daily["export_credit_inr_per_kwh"] == 4.0
+    interval = 3.0 / 60.0
+    export = 2.0 / 60.0
+    expected = round((interval - export) * 10.0 + export * 4.0, 2)
+    assert daily["estimated_savings"] == expected
+    assert body["profile"]["primary_goal"] == "minimize_bill"
+    assert daily["text"] in body["text"]
+    assert body["live"]["text"] in body["text"]
+
+    summary = await client.get("/onboarding/summary", headers=headers)
+    grid = summary.json()["grid"]
+    assert float(grid["energy_charge_inr_per_kwh"]) == 10.0
+    assert summary.json()["system"]["primary_goal"] == "minimize_bill"

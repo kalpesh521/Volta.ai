@@ -6,9 +6,9 @@ Write path (simulator):
 
 Read path (owner JWT; household_id must belong to the caller):
   GET  /energy/me/homes
-  GET  /energy/me/live|daily|hourly|history|profile   (?household_id= optional)
+  GET  /energy/me/live|daily|hourly|history|profile|context   (?household_id= optional)
   GET  /energy/onboarding-profiles                  X-Ingest-Token
-  GET  /energy/{household_id}/live|daily|hourly|history|...
+  GET  /energy/{household_id}/live|daily|hourly|history|context|...
   GET  /energy/{household_id}/profile   ingest token OR owner JWT
 
 All user GET routes require Authorization: Bearer <access_token>
@@ -39,6 +39,7 @@ from app.modules.onboarding.repository import OnboardingRepository
 from app.modules.onboarding.schemas import HomeListOut
 from app.modules.onboarding.service import OnboardingService
 from app.modules.energy.schemas import (
+    AssistantContextOut,
     BatteryStatusOut,
     DailySummaryOut,
     DevicesOut,
@@ -137,7 +138,7 @@ async def get_my_daily_summary(
     system: SolarSystem = Depends(require_my_completed_system),
     service: EnergyService = Depends(get_energy_service),
 ) -> DailySummaryOut:
-    return await service.get_daily(system.household_id, day=date_filter)
+    return await service.get_daily(system.household_id, day=date_filter, system=system)
 
 
 @router.get(
@@ -179,6 +180,23 @@ async def get_my_simulator_profile(
     system: SolarSystem = Depends(require_my_completed_system),
 ) -> SimulatorProfileOut:
     return build_simulator_profile(system)
+
+
+@router.get(
+    "/me/context",
+    response_model=AssistantContextOut,
+    summary="Assistant context: profile + live + daily with narrative text",
+)
+async def get_my_assistant_context(
+    date_filter: date | None = Query(
+        default=None,
+        alias="date",
+        description="Calendar date for the daily block. Defaults to the latest tick's date.",
+    ),
+    system: SolarSystem = Depends(require_my_completed_system),
+    service: EnergyService = Depends(get_energy_service),
+) -> AssistantContextOut:
+    return await service.get_assistant_context(system, day=date_filter)
 
 
 @router.get(
@@ -268,7 +286,7 @@ async def get_daily_summary(
     system: SolarSystem = Depends(require_owned_household),
     service: EnergyService = Depends(get_energy_service),
 ) -> DailySummaryOut:
-    return await service.get_daily(system.household_id, day=date_filter)
+    return await service.get_daily(system.household_id, day=date_filter, system=system)
 
 
 @router.get(
@@ -286,6 +304,23 @@ async def get_hourly_summary(
     service: EnergyService = Depends(get_energy_service),
 ) -> HourlySummaryOut:
     return await service.get_hourly(system.household_id, day=date_filter)
+
+
+@router.get(
+    "/{household_id}/context",
+    response_model=AssistantContextOut,
+    summary="Assistant context for this household",
+)
+async def get_household_assistant_context(
+    date_filter: date | None = Query(
+        default=None,
+        alias="date",
+        description="Calendar date for the daily block. Defaults to the latest tick's date.",
+    ),
+    system: SolarSystem = Depends(require_owned_household),
+    service: EnergyService = Depends(get_energy_service),
+) -> AssistantContextOut:
+    return await service.get_assistant_context(system, day=date_filter)
 
 
 @router.get(

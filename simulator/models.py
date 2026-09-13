@@ -131,6 +131,7 @@ class DeviceReading(ExtensibleModel):
     energy_interval_kwh: float = Field(ge=0)
     critical: bool
     controllable: bool
+    device_priority: str = "flexible"
 
 
 class EnergyFlows(ExtensibleModel):

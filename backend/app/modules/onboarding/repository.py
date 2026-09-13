@@ -106,6 +106,7 @@ class OnboardingRepository:
         inverter_brand: str,
         inverter_capacity_kw: Decimal,
         is_primary: bool = False,
+        primary_goal: str = "maximize_self_consumption",
     ) -> SolarSystem:
         system = SolarSystem(
             user_id=user_id,
@@ -118,6 +119,7 @@ class OnboardingRepository:
             avg_monthly_bill=avg_monthly_bill,
             inverter_brand=inverter_brand,
             inverter_capacity_kw=inverter_capacity_kw,
+            primary_goal=primary_goal,
             last_step=OnboardingStep.SYSTEM.value,
         )
         self.db.add(system)
@@ -182,6 +184,8 @@ class OnboardingRepository:
         sanctioned_load_kw: Decimal,
         tariff_type: str,
         discom: str | None,
+        energy_charge_inr_per_kwh: Decimal,
+        export_credit_inr_per_kwh: Decimal,
     ) -> GridConfig:
         """Create or fully replace the grid record for this system."""
         if system.grid_config:
@@ -190,6 +194,8 @@ class OnboardingRepository:
             gc.sanctioned_load_kw  = sanctioned_load_kw
             gc.tariff_type         = tariff_type
             gc.discom              = discom
+            gc.energy_charge_inr_per_kwh = energy_charge_inr_per_kwh
+            gc.export_credit_inr_per_kwh = export_credit_inr_per_kwh
         else:
             gc = GridConfig(
                 system_id=system.id,
@@ -197,6 +203,8 @@ class OnboardingRepository:
                 sanctioned_load_kw=sanctioned_load_kw,
                 tariff_type=tariff_type,
                 discom=discom,
+                energy_charge_inr_per_kwh=energy_charge_inr_per_kwh,
+                export_credit_inr_per_kwh=export_credit_inr_per_kwh,
             )
             self.db.add(gc)
             system.grid_config = gc

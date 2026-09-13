@@ -38,6 +38,7 @@ from app.modules.onboarding.enums import (
     MeterType,
     OnboardingStep,
     PanelType,
+    PrimaryGoal,
     SystemType,
     TariffType,
 )
@@ -75,6 +76,12 @@ class SolarSystem(Base):
     # ── Step 2: Inverter info (combined in same DB record / same API call) ───
     inverter_brand:        Mapped[str]     = mapped_column(String(30),    nullable=False)
     inverter_capacity_kw:  Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
+    # Assistant / automation objective. VARCHAR like other enums (Python-owned).
+    primary_goal: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        default=PrimaryGoal.MAXIMIZE_SELF_CONSUMPTION.value,
+    )
 
     # ── Onboarding state ─────────────────────────────────────────────────────
     # last_step: furthest step the user completed (for resume on page reload)
@@ -131,6 +138,12 @@ class GridConfig(Base):
     sanctioned_load_kw:  Mapped[Decimal]      = mapped_column(Numeric(6, 2), nullable=False)
     tariff_type:         Mapped[str]          = mapped_column(String(20),    nullable=False)
     discom:              Mapped[str | None]   = mapped_column(String(100),   nullable=True)
+    energy_charge_inr_per_kwh: Mapped[Decimal] = mapped_column(
+        Numeric(8, 2), nullable=False, default=Decimal("8.50")
+    )
+    export_credit_inr_per_kwh: Mapped[Decimal] = mapped_column(
+        Numeric(8, 2), nullable=False, default=Decimal("6.20")
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

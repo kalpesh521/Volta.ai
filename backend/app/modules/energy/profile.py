@@ -9,8 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.modules.onboarding.enums import MeterType, SystemType
+from app.modules.onboarding.enums import MeterType, PrimaryGoal, SystemType
 from app.modules.onboarding.models import SolarSystem, TrackedAppliance
+from app.modules.energy.insights import (
+    device_rows_for_profile_text,
+    household_profile_text,
+    tariff_from_system,
+)
 from app.modules.energy.schemas import SimulatorDeviceSpec, SimulatorProfileOut
 
 # Typical nameplate Wp used to derive kWp from panel_qty × chemistry.
@@ -128,22 +133,46 @@ def build_simulator_profile(system: SolarSystem) -> SimulatorProfileOut:
     grid_available = system.system_type != SystemType.OFF_GRID.value
     meter = system.grid_config.meter_type if system.grid_config else None
     zero_export = bool(grid_available and meter == MeterType.NO_EXPORT.value)
+    tariff = tariff_from_system(system)
+    devices = _devices(list(system.appliances))
+    goal = system.primary_goal or PrimaryGoal.MAXIMIZE_SELF_CONSUMPTION.value
+    kwp = solar_capacity_kwp(system.panel_type, system.panel_qty)
+    min_soc = reserve if battery_present else 20.0
 
     return SimulatorProfileOut(
         household_id=system.household_id,
         system_type=system.system_type,
         panel_type=system.panel_type,
         panel_qty=system.panel_qty,
-        solar_capacity_kwp=solar_capacity_kwp(system.panel_type, system.panel_qty),
+        solar_capacity_kwp=kwp,
         inverter_capacity_kw=inverter_kw,
         battery_present=battery_present,
         battery_capacity_kwh=capacity,
         battery_usable_capacity_kwh=usable,
-        battery_minimum_soc_percent=reserve if battery_present else 20.0,
+        battery_minimum_soc_percent=min_soc,
         battery_max_charge_power_kw=inverter_kw if battery_present else 0.0,
         battery_max_discharge_power_kw=inverter_kw if battery_present else 0.0,
         grid_available=grid_available,
         zero_export_mode=zero_export,
         location=system.location,
-        devices=_devices(list(system.appliances)),
+        primary_goal=goal,
+        tariff_type=tariff.tariff_type,
+        tariff_rate=tariff.tariff_rate,
+        export_credit_inr_per_kwh=tariff.export_credit_inr_per_kwh,
+        meter_type=tariff.meter_type,
+        devices=devices,
+        text=household_profile_text(
+            household_id=system.household_id,
+            system_type=system.system_type,
+            location=system.location,
+            primary_goal=goal,
+            solar_capacity_kwp=kwp,
+            battery_present=battery_present,
+            battery_capacity_kwh=capacity,
+            battery_minimum_soc_percent=min_soc,
+            tariff_type=tariff.tariff_type,
+            tariff_rate=tariff.tariff_rate,
+            export_credit_inr_per_kwh=tariff.export_credit_inr_per_kwh,
+            devices=device_rows_for_profile_text(devices),
+        ),
     )

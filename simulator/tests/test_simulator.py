@@ -485,6 +485,9 @@ def test_apply_onboarding_profile_sets_capacity_and_devices():
         "grid_available": True,
         "zero_export_mode": False,
         "location": "Pune, India",
+        "primary_goal": "maximize_self_consumption",
+        "tariff_rate": 8.5,
+        "text": "Hybrid home …",
         "devices": [
             {
                 "device_id": "dev_refrigerator",
