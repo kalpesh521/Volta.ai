@@ -4,10 +4,15 @@ Energy dispatch priority and AC-bus balance check.
 Priority:
     1. Solar → home
     2. Solar surplus → battery
-    3. Remaining solar surplus → grid (clipped in zero-export mode)
-    4. Battery → home
+    3. Remaining solar surplus → grid (clipped by zero-export / volt-watt)
+    4. Battery → home (down to the discharge floor the caller passes)
     5. Grid → home
-    6. Unserved load if grid is down and the battery cannot cover the rest
+    6. Grid → battery (only when allowed and the battery is not discharging)
+    7. Unserved load if grid is down and the battery cannot cover the rest
+
+During an outage the backup port is limited to `backup_output_limit_kw`
+(inverter rating). The caller zeroes `solar_kw` for grid-tied homes without
+a battery (anti-islanding).
 
 Validation never stops the generator; it only sets status / warning fields.
 """
@@ -26,30 +31,51 @@ def dispatch_energy(
     grid_available: bool,
     zero_export_mode: bool,
     zero_export_limit_kw: float,
-    battery_can_charge_from_grid: bool,  # reserved; grid→battery charge is off
+    battery_can_charge_from_grid: bool,
+    grid_charge_kw: float = 0.0,
+    export_limit_kw: float | None = None,
+    backup_output_limit_kw: float | None = None,
 ) -> EnergyFlows:
     remaining_solar = max(0.0, solar_kw)
     remaining_load = max(0.0, load_kw)
+    backup_limit = None if grid_available or backup_output_limit_kw is None else max(0.0, backup_output_limit_kw)
 
     solar_to_home = min(remaining_solar, remaining_load)
+    if backup_limit is not None:
+        solar_to_home = min(solar_to_home, backup_limit)
     remaining_solar -= solar_to_home
     remaining_load -= solar_to_home
 
     solar_to_battery = min(remaining_solar, max(0.0, max_charge_kw))
     remaining_solar -= solar_to_battery
 
-    export_cap = 0.0 if zero_export_mode else remaining_solar
+    export_cap = remaining_solar
     if zero_export_mode:
-        export_cap = min(remaining_solar, max(0.0, zero_export_limit_kw))
+        export_cap = min(export_cap, max(0.0, zero_export_limit_kw))
+    if export_limit_kw is not None:
+        export_cap = min(export_cap, max(0.0, export_limit_kw))
     solar_to_grid = export_cap if grid_available else 0.0
     curtailed = remaining_solar - solar_to_grid
 
     battery_to_home = min(remaining_load, max(0.0, max_discharge_kw))
+    if backup_limit is not None:
+        battery_to_home = min(battery_to_home, max(0.0, backup_limit - solar_to_home))
     remaining_load -= battery_to_home
 
     grid_to_home = remaining_load if grid_available else 0.0
     if grid_available:
         remaining_load = 0.0
+
+    grid_to_battery = 0.0
+    if grid_available and battery_can_charge_from_grid and battery_to_home <= 0.0:
+        grid_to_battery = min(max(0.0, grid_charge_kw), max(0.0, max_charge_kw - solar_to_battery))
+    # Importing and exporting in the same tick is not physical; let grid charging
+    # absorb the export first.
+    if grid_to_battery > 0.0 and solar_to_grid > 0.0:
+        shift = min(grid_to_battery, solar_to_grid)
+        solar_to_grid -= shift
+        solar_to_battery += shift
+        grid_to_battery -= shift
 
     return EnergyFlows(
         solar_to_home_kw=round(solar_to_home, 4),
@@ -59,7 +85,7 @@ def dispatch_energy(
         grid_to_home_kw=round(grid_to_home, 4),
         unserved_load_kw=round(remaining_load, 4),
         solar_curtailed_kw=round(max(0.0, curtailed), 4),
-        grid_to_battery_kw=0.0,
+        grid_to_battery_kw=round(grid_to_battery, 4),
     )
 
 

@@ -27,6 +27,7 @@ class Intent(StrEnum):
     SAVINGS = "savings"
     USAGE_PATTERN = "usage_pattern"
     WEATHER = "weather"
+    DOCUMENT = "document"
     DEVICE_CONTROL = "device_control"
     OUT_OF_SCOPE = "out_of_scope"
 
@@ -54,6 +55,10 @@ INTENT_DESCRIPTIONS: dict[Intent, str] = {
     Intent.SAVINGS: "Money saved, bill impact, tariff cost.",
     Intent.USAGE_PATTERN: "Hourly pattern, peaks, when energy is used or produced.",
     Intent.WEATHER: "Weather and its effect on solar output.",
+    Intent.DOCUMENT: (
+        "Manuals, fault codes, net-metering policy, tariff orders, help articles, "
+        "and this user's bills or warranty documents."
+    ),
     Intent.DEVICE_CONTROL: "A request to turn on/off, start, stop or schedule a device.",
     Intent.OUT_OF_SCOPE: "Not about this home's energy system.",
 }
@@ -62,6 +67,7 @@ INTENT_DESCRIPTIONS: dict[Intent, str] = {
 INTENT_PRIORITY: tuple[Intent, ...] = (
     Intent.DEVICE_CONTROL,
     Intent.APPLIANCE_TIMING,
+    Intent.DOCUMENT,
     Intent.FULL_OVERVIEW,
     Intent.HOME_PROFILE,
     Intent.BACKUP,
@@ -114,6 +120,7 @@ _RULES: dict[Intent, tuple[re.Pattern[str], ...]] = {
         r"(?:please\s+)?(?:turn|switch|start|stop|shut|power|run|schedule|set|charge|enable|disable)\b",
         r"^(?:please\s+)?(?:turn|switch|shut|power)\s+(?:it\s+)?(?:on|off|down|up)\b",
         r"^(?:please\s+)?(?:start|stop|run|schedule|set|enable|disable)\s+(?:the|my|charging)\b",
+        r"\b(?:turn|switch|shut|power)\s+(?:the\s+|my\s+)?(?:\w+\s+){0,4}(?:on|off)\b",
     ),
     Intent.APPLIANCE_TIMING: _rx(
         r"\b(?:should|can|could|may)\s+i\s+(?:run|use|start|turn on|switch on|charge|operate)\b",
@@ -221,6 +228,19 @@ _RULES: dict[Intent, tuple[re.Pattern[str], ...]] = {
         r"\btemperature\b",
         r"\bforecast\b",
     ),
+    Intent.DOCUMENT: _rx(
+        r"\b(?:fault|error)\s*-?\s*codes?\b",
+        r"\bmanuals?\b",
+        r"\bwarrant(?:y|ies)\b",
+        r"\bnet\s*-?\s*metering\b",
+        r"\bdiscom\s+polic",
+        r"\bmerc\b",
+        r"\btariff\s+(?:order|document|schedule|circular)\b",
+        r"\belectricity\s+bills?\b",
+        r"\bmy\s+bills?\b",
+        r"\binstallation\s+(?:document|certificate|report|warranty)\b",
+        r"\bhelp\s+(?:doc(?:ument(?:ation)?)?|article|guide)\b",
+    ),
     Intent.LIVE_OVERVIEW: _rx(
         r"\bright\s+now\b",
         r"\bcurrent(?:ly)?\b",
@@ -297,6 +317,9 @@ def classify_by_rules(question: str) -> IntentMatch:
         r"\bnow\b|\btoday\b|\btonight\b", text
     ) and re.search(r"\b(?:should|can|could|may|good|ok|okay)\b", text):
         matched.add(Intent.APPLIANCE_TIMING)
+
+    if Intent.DEVICE_CONTROL in matched and re.search(r"\b(?:should|can|could|may)\s+i\b", text):
+        matched.discard(Intent.DEVICE_CONTROL)
 
     for absorbing in INTENT_PRIORITY:
         if absorbing in _ABSORBING_INTENTS and absorbing in matched:

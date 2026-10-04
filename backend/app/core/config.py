@@ -110,6 +110,24 @@ class Settings(BaseSettings):
     # --- Frontend (used to redirect after OAuth completes) ---
     FRONTEND_URL: str = "http://localhost:3000"
 
+    # Comma-separated emails that may upload shared manuals and policies.
+    # A user with is_admin=true is also an admin. Empty means flag-only.
+    SURYAA_ADMIN_EMAILS: str = ""
+
+    # Original uploads. Embeddings live in Postgres; this directory holds the file.
+    KNOWLEDGE_STORAGE_DIR: str = "var/knowledge"
+    KNOWLEDGE_MAX_UPLOAD_BYTES: int = 15 * 1024 * 1024
+    KNOWLEDGE_USE_PGVECTOR: bool = True
+    RATE_LIMIT_KNOWLEDGE: str = "30/minute"
+
+    # Device commands stay off until both flags allow them.
+    # KILL_SWITCH true means every command is rejected.
+    DEVICE_CONTROL_ENABLED: bool = False
+    DEVICE_KILL_SWITCH: bool = True
+    DEVICE_COMMAND_EXCHANGE: str = "device.commands"
+    DEVICE_COMMAND_QUEUE: str = "device.commands"
+    DEVICE_COMMAND_ROUTING_KEY: str = "device.command"
+
 
 @lru_cache
 def get_settings() -> Settings:

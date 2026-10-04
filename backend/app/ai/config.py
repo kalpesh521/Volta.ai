@@ -68,6 +68,15 @@ class AISettings(BaseSettings):
     AI_TREND_HISTORY_LIMIT: int = 240
     RATE_LIMIT_ASSISTANT: str = "20/minute"
 
+    # Empty provider keeps the local hashing embedder (no API key, stable tests).
+    AI_EMBEDDING_PROVIDER: str = ""
+    AI_EMBEDDING_MODEL: str = "hashing-256"
+    AI_EMBEDDING_DIMENSIONS: int = 256
+    RAG_CHUNK_CHARS: int = 900
+    RAG_CHUNK_OVERLAP: int = 120
+    RAG_TOP_K: int = 5
+    RAG_MIN_SCORE: float = 0.08
+
     LANGSMITH_TRACING: bool = False
     LANGSMITH_API_KEY: SecretStr | None = None
     LANGSMITH_PROJECT: str = "suryaa-assistant"

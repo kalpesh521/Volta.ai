@@ -7,7 +7,7 @@ Standalone solar-home telemetry generator for Suryaa. One tick composes weather,
 | **Project** | Suryaa telemetry simulator |
 | **Stack** | Python 3.10+ (3.12 recommended) · Pydantic v2 · pydantic-settings · httpx |
 | **Dashboard** | Stdlib HTTP + SSE — **not FastAPI** |
-| **Tests** | pytest + pytest-asyncio (18 tests) |
+| **Tests** | pytest + pytest-asyncio (47 tests) |
 
 > **What it is not.** Redis, Postgres, FastAPI, Docker, LangChain, or the main backend API. It sits next to `backend/` and `frontend/` as its own package. The simulator never sees Redis or Timescale.
 
@@ -50,13 +50,16 @@ python -m simulator.main --dashboard --weather-mode live
 ```
 CLI / dashboard
      → TelemetryGenerator.step()          compose one reading
-          → WeatherClient                 Open-Meteo or fallback
-          → SolarGenerator                PV kW from GHI / night = 0
-          → LoadGenerator + DeviceEngine
-          → energy_balance.dispatch       priority: solar → batt → grid
-          → BatteryEngine / GridEngine
+          → scenario_for_day              fixed scenario or `auto` daily mix
+          → WeatherClient                 Open-Meteo or synthetic climate, enriched
+          → SolarGenerator                POA + cell temp + soiling + inverter
+          → LoadGenerator + DeviceEngine  occupancy, untracked loads, appliances
+          → grid state + goal policy      outages, volt-watt cap, ToU, reserve
+          → energy_balance.dispatch       solar → batt → grid (+ grid→batt)
+          → BatteryEngine / GridEngine    taper, thermal, SOH / voltage, tariff
           → validate_energy_balance       never stops the generator
-     → stdout JSONL + live_bus SSE + dashboard HTML
+          → events + active_conditions + daily KPIs
+     → stdout JSONL (rotated) + live_bus SSE + dashboard HTML + saved state
 ```
 
 ```mermaid
@@ -90,21 +93,27 @@ volta.ai/
     main.py                     CLI + live clock loop
     __main__.py                 python -m simulator
     config.py                   SimulatorConfig + DEFAULT_DEVICE_CATALOG
+    scenarios.py                Scenario registry + season-aware `auto` mix
     models.py                   Weather / Location / Device / Telemetry
-    clients/weather.py          Open-Meteo fetch + cache + fallback
+    clients/weather.py          Open-Meteo fetch + cache + enrichment + fallback
     clients/geocoding.py        City search + GPS coords → timezone
-    engines/solar.py            PV from GHI, cloud, rain, inverter clip
-    engines/load.py             Base load + occupancy + appliances
-    engines/device.py           Catalog schedules (cyclic / windows / AC)
-    engines/battery.py          SOC persist; charge/discharge as separate kW
-    engines/grid.py             Import/export, outage window, zero-export
+    engines/randomness.py       Stateless seeded hashing (household / location seeds)
+    engines/sun.py              NOAA sun position, clear sky, POA, cell temp
+    engines/climate.py          Synthetic climate: daily regimes, rain, storms, fog
+    engines/solar.py            PV: POA, temperature, soiling, ageing, inverter
+    engines/load.py             Occupancy + untracked loads + appliances
+    engines/device.py           Per-appliance behaviour (fridge, washer, geyser, AC, pump, EV)
+    engines/battery.py          SOC/SOH, CC/CV taper, thermal model, faults
+    engines/grid.py             Outages, voltage/frequency, volt-watt, tariff/cost
     engines/energy_balance.py   Dispatch order + AC-bus check
-    telemetry_generator.py      One tick = all engines → TelemetryRecord
+    telemetry_generator.py      One tick = all engines → TelemetryRecord + events
     dashboard/live_bus.py       Thread-safe latest + history for SSE
     dashboard/location_state.py Current home + stop flag
     dashboard/server.py         Serves HTML + /api/* + Stop shutdown
-    data/telemetry.jsonl        Append-only output
-    tests/test_simulator.py     18 tests
+    data/telemetry.jsonl        Output (rotated at OUTPUT_MAX_MB)
+    data/state/<home>.json      Saved engine state for live runs
+    tests/test_simulator.py     Contract tests
+    tests/test_realism.py       Physics + behaviour tests
     .env.example                Optional overrides
 ```
 
@@ -164,7 +173,7 @@ There is **no Postgres**. State is in-memory engines + append-only JSONL.
 `solar_to_home` / `solar_to_battery` / `solar_to_grid`  
 `battery_to_home` / `grid_to_home` / `unserved_load`  
 `solar_curtailed_kw`  
-`grid_to_battery_kw` — reserved, always `0` (no grid charging by default)
+`grid_to_battery_kw` — grid charging when the goal asks for it (`preserve_backup`, or `minimize_bill` off-peak) and `battery_can_charge_from_grid`
 
 ### `TelemetryRecord` (`extra="allow"`)
 
@@ -176,7 +185,12 @@ There is **no Postgres**. State is in-memory engines + append-only JSONL.
 | Battery | `soc` / `soh` / `charge_kw` / `discharge_kw` / `status` |
 | Grid | `grid_status` / import / export / totals |
 | Balance | flow fields + `energy_balance_status` / `error` / `valid` |
-| Nested | `devices[]`, `weather{}`, `location{}` |
+| Nested | `devices[]`, `weather{}`, `location{}`, `system{}`, `load_breakdown_kw{}` |
+| AI labels | `scenario`, `active_conditions[]`, `events[]` |
+| Diagnostics | PV losses, `inverter_status`, battery temperature / derate / cycles, grid voltage / frequency / outage cause |
+| Money + KPIs | tariff period / rate, interval and daily cost, self-consumption %, self-sufficiency % |
+
+Full field list: [simulator/README.md → JSON output](../simulator/README.md#json-output).
 
 > **Interview line.** Charge and discharge are separate non-negative kW fields. Never infer direction from the sign of one `battery_power` value.
 
@@ -226,16 +240,18 @@ Always open via `http://127.0.0.1:8765` — never `file://`. GPS and SSE need a 
 
 ### A. One telemetry tick
 
-1. Convert timestamp to household timezone.
-2. `WeatherClient.get_weather` (cache lookup or fallback).
-3. `SolarGenerator.compute_power_kw` (0 at night).
-4. `LoadGenerator.generate` = base load + `DeviceEngine.step`.
-5. `grid_is_available` (`GRID_AVAILABLE` + optional `GRID_OUTAGE_WINDOW`).
-6. `dispatch_energy` (priority list below).
-7. Actual solar = `solar_to_home + solar_to_battery + solar_to_grid`. Served load = `solar_to_home + battery_to_home + grid_to_home`.
-8. Accumulators: solar kWh, load kWh, battery SOC, grid import / export.
-9. `validate_energy_balance` — warning only, loop continues.
-10. Publish JSONL + `live_bus`; dashboard SSE clients see it.
+1. Convert timestamp to household timezone; pick the day's scenario.
+2. `WeatherClient.get_weather` (cache lookup or synthetic climate) → scenario overlay → enrichment.
+3. `SolarGenerator.compute` → AC potential + loss breakdown (0 at night).
+4. `LoadGenerator.generate` = untracked loads + `DeviceEngine.step`.
+5. `grid_outage_cause` (off-grid, forced, window, load shedding, random feeder fault); feeder voltage → volt-watt export cap; tariff period.
+6. Policy: anti-islanding (no battery → PV off in an outage), goal → discharge floor + grid-charge request, outage load shedding.
+7. `dispatch_energy` (priority list below).
+8. Actual solar = `solar_to_home + solar_to_battery + solar_to_grid`. Served load = `solar_to_home + battery_to_home + grid_to_home`.
+9. Accumulators: solar kWh, load kWh, battery SOC/SOH/temperature, grid import / export / cost.
+10. `validate_energy_balance` — warning only, loop continues.
+11. Events (diff vs previous tick), `active_conditions`, daily KPIs.
+12. Publish JSONL + `live_bus`; dashboard SSE clients see it.
 
 ### B. Live clock vs simulated time
 
@@ -290,29 +306,27 @@ Restart: run `python -m simulator.main --dashboard` again.
 
 1. Solar → home
 2. Solar surplus → battery
-3. Remaining surplus → grid (`0` if `zero_export_mode`)
-4. Battery → home
+3. Remaining surplus → grid (zero-export and volt-watt caps)
+4. Battery → home (down to the goal's floor)
 5. Grid → home
-6. Unserved load if grid down and battery at min SOC
+6. Grid → battery (goal-driven, never while discharging)
+7. Unserved load if grid down and solar + battery (≤ inverter rating) cannot cover it
 
 ### Solar
 
 ```
-solar_power_kw =
-    capacity_kwp
-  × (GHI_wm2 / 1000)          # clip 0–1.2
-  × efficiency (0.82)
-  × shading (0.95)
-  × temperature_factor        # derate above 25 °C
-  × cloud_factor / rain_factor  # ONLY if GHI was synthesized (clear-sky sine)
-  × small seeded noise
+POA       = plane_of_array(GHI, DNI, DHI, sun, tilt≈|lat|, azimuth=equator, albedo)
+cell_temp = SAPM(POA, ambient, wind)
+dc_kw     = kWp × POA/1000 × 0.92 DC derate × 0.97 shading
+            × temp_factor(−0.37 %/°C) × (1 − soiling) × ageing
+ac_kw     = inverter(dc_kw)   # part-load efficiency, wake/sleep, clipping
 ```
 
-- Night (before sunrise / after sunset) = **0**
-- Never exceed `inverter_capacity_kw`
+- Night = **0**; never exceed `inverter_capacity_kw`
 - Measured Open-Meteo GHI already includes clouds / rain — do not derate twice
-- If GHI missing in daylight → sine curve, then apply cloud / rain
-- `sensor_failure` (degraded + GHI 0) → solar 0 (no sine fallback)
+- Passing-cloud shadows on partly cloudy skies give realistic fast ramps
+- If GHI is missing in daylight (`sensor_failure`) → estimate from clear sky + cloud cover (`irradiance_source="estimated"`)
+- Pune calibration: ~1,430 kWh/kWp/year (5.0/day April, 2.5–3.3 monsoon)
 
 ### AC-bus check (tolerance 0.05 kW)
 
@@ -325,33 +339,29 @@ Fail → `energy_balance_status="warning"`, `warnings[]` filled, **keep running*
 
 ### Battery
 
-- SOC persists between ticks
+- SOC persists between ticks (and across restarts via saved state)
 - Charge and discharge never in the same interval
-- SOC tank = `battery_usable_capacity_kwh` (capped by nameplate)
-- Clamp: min SOC (default 20%) … 100%
-- Default: cannot charge from grid
+- SOC tank = `battery_usable_capacity_kwh` (capped by nameplate) × SOH
+- Clamp: min SOC (default 20%) … 100%; CC/CV taper above 90 %
+- Thermal model (~90 min time constant); derate near the limit; fault code 2 at 55 °C, clears at 47 °C
+- SOH fades with equivalent full cycles
+- No battery → SOC 0, status `unavailable`, `battery_present=false`
 - Grid import and export are never both &gt; 0 in the same interval
 
 ### Default devices
 
-| Device | Schedule |
+| Device | Behaviour |
 |---|---|
-| Refrigerator | Cyclic, critical |
-| Washing machine | Morning window, every other day |
-| Water heater | Morning + evening windows |
-| Air conditioner | Hot **or** afternoon / evening windows |
-| Water pump | Short morning window |
+| Refrigerator | Compressor duty cycle rises with heat and meal-time door openings; nightly defrost |
+| Washing machine | More likely on weekends; fill / wash / rinse / spin / drain phases |
+| Water heater | Run length follows how cold the day is; skipped in a heatwave |
+| Air conditioner | Hysteresis + pull-down; daytime only when people are home and it is really hot; warm nights; inverter compressor modulates |
+| Water pump | Short runs with motor-start inrush |
+| EV charger (if in catalog) | Evening plug-in, CC then taper, session energy varies by day |
 
 ### Scenarios
 
-| Scenario | Effect |
-|---|---|
-| `normal_day` | Baseline |
-| `cloudy_day` / `rainy_day` | Weather overlay |
-| `battery_low` / `battery_full` | Initial SOC |
-| `grid_outage` | `GRID_AVAILABLE=false` |
-| `high_evening_load` | Evening base × 1.85 + AC on |
-| `sensor_failure` | GHI zeroed, `data_quality=degraded` |
+20 scenarios plus `auto` (season-aware daily mix). See [simulator/README.md → Scenarios](../simulator/README.md#scenarios).
 
 ---
 
@@ -378,13 +388,16 @@ This is a **local generator**, not an API product.
 |---|---|
 | Home | `HOUSEHOLD_ID`, `TIMEZONE`, `LATITUDE`, `LONGITUDE`, `LOCATION_NAME` |
 | Geocode | `GEOCODE_ON_START`, `LOCATION_COUNTRY_CODE` |
-| PV | `SOLAR_CAPACITY_KWP`, `INVERTER_CAPACITY_KW`, `SOLAR_EFFICIENCY`, `SHADING_FACTOR` |
-| Battery | `BATTERY_CAPACITY_KWH`, `INITIAL_BATTERY_SOC_PERCENT`, `BATTERY_MINIMUM_SOC_PERCENT` |
-| Grid | `GRID_AVAILABLE`, `ZERO_EXPORT_MODE`, `GRID_OUTAGE_WINDOW=14:00-16:00` |
+| PV | `SOLAR_CAPACITY_KWP`, `INVERTER_CAPACITY_KW`, `SOLAR_EFFICIENCY` (DC derate 0.92), `SHADING_FACTOR`, `PANEL_TILT_DEG`, `PANEL_AZIMUTH_DEG`, `PV_TEMP_COEFFICIENT_PER_C`, soiling + cleaning knobs |
+| Household | `HOUSEHOLD_OCCUPANTS`, `WORK_FROM_HOME` |
+| Battery | `BATTERY_CAPACITY_KWH`, `INITIAL_BATTERY_SOC_PERCENT`, `BATTERY_MINIMUM_SOC_PERCENT`, `BATTERY_SOH_PERCENT`, `BATTERY_CYCLE_LIFE`, `BATTERY_BACKUP_RESERVE_PERCENT` |
+| Grid | `GRID_AVAILABLE`, `ZERO_EXPORT_MODE`, `GRID_OUTAGE_WINDOW`, `LOAD_SHEDDING_WINDOWS`, `RANDOM_GRID_OUTAGES`, `GRID_VOLTAGE_UPPER_LIMIT_V` |
+| Goal + tariff | `PRIMARY_GOAL`, `TARIFF_TYPE`, `TARIFF_RATE_INR_PER_KWH`, `EXPORT_CREDIT_INR_PER_KWH`, `METER_TYPE`, ToU windows / multipliers |
 | Weather | `WEATHER_MODE`, `WEATHER_REFRESH_MINUTES`, `SCENARIO`, `RANDOM_SEED` |
-| Devices | `DEVICE_CATALOG_JSON` — override the five default appliances |
+| Output | `OUTPUT_MAX_MB`, `OUTPUT_BACKUPS`, `PERSIST_STATE`, `STATE_DIR` |
+| Devices | `DEVICE_CATALOG_JSON` — override the default appliances |
 
-`BATTERY_USABLE_CAPACITY_KWH` is stored / CLI-set (80% of nameplate) but SOC math currently uses `battery_capacity_kwh` (nameplate).
+Onboarding profiles also pass `primary_goal`, tariff, export credit, meter type, system type and panel type (→ temperature coefficient).
 
 Switch live weather off without code change:
 
@@ -404,18 +417,19 @@ source simulator/.venv/bin/activate
 pytest simulator/tests
 ```
 
-18 tests. Coverage includes:
+47 tests. Coverage includes:
 
-- Night solar = 0
-- Cloud and rain derate PV
-- Inverter clip
-- SOC never below min / never above 100%
-- Grid import 0 on outage
-- Zero-export clips export
-- Energy balance within 0.05 kW
-- Open-Meteo failure → fallback
-- Devices add to home load
-- Random seed repeatability
+- Night solar = 0; cloud and rain derate PV; inverter clip
+- SOC never below min / never above 100%; taper near full; no-battery reporting
+- Grid import 0 on outage; `off_grid` status; zero-export clips export
+- Energy balance within 0.05 kW on every tick of a full simulated day
+- Open-Meteo failure → fallback; devices add to home load; seed repeatability
+- Sunrise / sunset within 3 min of Open-Meteo; tilted-panel winter gain
+- Weather varies day to day and is order-independent; monsoon wetter than winter
+- Battery overheating fault; SOH fade; `battery_degraded`
+- Anti-islanding; outage load shedding; preserve-backup reserve; ToU grid charging
+- Volt-watt curtailment; outage events + labels; neighbour-shared random outages
+- `auto` scenario coverage; realistic daily yield / load; state restore; JSONL rotation
 - Geocode parse + API failure keeps default coords
 - GPS `timezone=auto` parse + forecast failure keeps lat / lon
 - `live_bus.close()` drops publish and waiters

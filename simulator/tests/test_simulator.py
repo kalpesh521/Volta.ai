@@ -73,7 +73,7 @@ def test_solar_is_zero_at_night():
 
 def test_cloudy_weather_reduces_solar_output():
     ts = datetime(2026, 8, 23, 12, 30, tzinfo=TZ)
-    gen = SolarGenerator(_cfg())
+    gen = SolarGenerator(_cfg(cloud_transients=False))
     clear = gen.compute_power_kw(ts, _weather(ts, ghi=800.0, cloud=8.0))
     cloudy = gen.compute_power_kw(ts, _weather(ts, ghi=320.0, cloud=90.0))
     assert clear > 0
@@ -90,7 +90,8 @@ def test_measured_ghi_is_not_cloud_or_rain_derated_again():
 
 def test_synthetic_ghi_applies_cloud_and_rain():
     ts = datetime(2026, 8, 23, 12, 30, tzinfo=TZ)
-    gen = SolarGenerator(_cfg())
+    # Passing-cloud shadows would make a single tick noisy; compare the means.
+    gen = SolarGenerator(_cfg(cloud_transients=False))
     clear = gen.compute_power_kw(ts, _weather(ts, ghi=0.0, cloud=8.0, rain=0.0))
     cloudy = gen.compute_power_kw(ts, _weather(ts, ghi=0.0, cloud=90.0, rain=0.0))
     wet = gen.compute_power_kw(ts, _weather(ts, ghi=0.0, cloud=8.0, rain=6.0))
@@ -151,11 +152,18 @@ def test_grid_import_zero_during_outage():
     assert flows.grid_to_home_kw == 0.0
     assert flows.unserved_load_kw > 0
 
-    engine = GridEngine(_cfg(grid_available=False))
     ts = datetime(2026, 8, 23, 20, 0, tzinfo=TZ)
-    snapshot = engine.apply(ts, import_kw=3.0, export_kw=0.4, available=False)
+    snapshot = GridEngine(_cfg(force_grid_outage=True)).apply(
+        ts, import_kw=3.0, export_kw=0.4, available=False
+    )
     assert snapshot["grid_import_power_kw"] == 0.0
     assert snapshot["grid_status"] == "outage"
+    assert not grid_is_available(_cfg(force_grid_outage=True), ts)
+
+    off_grid = GridEngine(_cfg(grid_available=False)).apply(
+        ts, import_kw=3.0, export_kw=0.4, available=False
+    )
+    assert off_grid["grid_status"] == "off_grid"
     assert not grid_is_available(_cfg(grid_available=False), ts)
 
     both = GridEngine(_cfg()).apply(
@@ -226,7 +234,7 @@ def test_device_power_affects_home_load():
     weather = fallback_weather(ts, config)
     demand, devices = load.generate(ts, weather)
     fridge = next(item for item in devices if item.device_type == "refrigerator")
-    base = load.base_load_kw(ts)
+    base = load.base_load_kw(ts, weather, devices=devices)
     assert fridge.current_power_kw > 0
     assert demand == pytest.approx(
         round(base + sum(d.current_power_kw for d in devices), 4)

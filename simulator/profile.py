@@ -12,6 +12,25 @@ from typing import Any
 
 from simulator.config import SimulatorConfig
 
+# Pmax temperature coefficient (per °C) by panel technology keyword.
+_PANEL_TEMP_COEFFICIENTS = (
+    ("thin", 0.0025),
+    ("topcon", 0.0030),
+    ("hjt", 0.0026),
+    ("hetero", 0.0026),
+    ("bifacial", 0.0034),
+    ("mono", 0.0035),
+    ("poly", 0.0040),
+)
+
+
+def _temp_coefficient(panel_type: str | None) -> float | None:
+    text = (panel_type or "").lower()
+    for keyword, coefficient in _PANEL_TEMP_COEFFICIENTS:
+        if keyword in text:
+            return coefficient
+    return None
+
 
 def apply_onboarding_profile(
     config: SimulatorConfig,
@@ -38,7 +57,20 @@ def apply_onboarding_profile(
         "grid_available": bool(profile["grid_available"]),
         "zero_export_mode": bool(profile["zero_export_mode"]),
         "device_catalog_json": json.dumps(devices),
+        "system_type": str(profile.get("system_type") or config.system_type),
+        "primary_goal": str(profile.get("primary_goal") or "maximize_self_consumption"),
+        "tariff_type": profile.get("tariff_type"),
+        "tariff_rate_inr_per_kwh": profile.get("tariff_rate"),
+        "export_credit_inr_per_kwh": profile.get("export_credit_inr_per_kwh"),
+        "meter_type": profile.get("meter_type"),
     }
+    coefficient = _temp_coefficient(profile.get("panel_type"))
+    if coefficient is not None:
+        updates["pv_temp_coefficient_per_c"] = coefficient
+    # Hybrid inverters can charge from the grid; the goal policy decides when.
+    updates["battery_can_charge_from_grid"] = bool(
+        updates["battery_present"] and "hybrid" in updates["system_type"].lower()
+    )
     location = profile.get("location")
     if isinstance(location, str) and location.strip():
         updates["location_name"] = location.strip()

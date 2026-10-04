@@ -43,7 +43,17 @@ python -m simulator.main --weather-mode live --speed 10 --pretty
 
 # Stop after 12 readings (12 simulated minutes at the default 60s interval)
 python -m simulator.main --weather-mode fallback --speed 0 --ticks 12 --pretty
+
+# Backfill a year of 5-minute data with a different realistic situation each day
+python -m simulator.main --weather-mode fallback --no-geocode --scenario auto \
+  --start-time 2026-01-01T00:00:00 --days 365 --interval-seconds 300 --quiet
 ```
+
+A year of 5-minute ticks takes about 100 s. Live runs save engine state
+(lifetime kWh, battery SOC/SOH, panel soiling, device sessions) to
+`data/state/<household_id>.json` every ~30 s and on exit, and resume from it
+on the next start. Pass `--fresh-state` to start clean. Backfills (`--start-time`
+/ `--days`) never read or write that state.
 
 `--speed 1` waits one wall-clock second per simulated second (real time).  
 `--speed 60` prints about one reading per second when the interval is 60s.  
@@ -88,6 +98,8 @@ If you pass `--start-time`, the generator switches to simulated time (useful for
 | `--output-file` | JSONL path (relative paths are under `simulator/`) |
 | `--weather-mode` | `live` \| `fallback` \| `historical-style` |
 | `--ticks` | Stop after N readings (0 = until Ctrl+C) |
+| `--days` | Backfill N simulated days (sets `--ticks`, speed 0; starts N days ago if no `--start-time`) |
+| `--fresh-state` | Ignore saved state from a previous live run |
 | `--pretty` | Indent JSON on stdout |
 | `--location` | City/place name resolved by Open-Meteo geocoding |
 | `--country-code` | ISO country filter (e.g. `IN`) |
@@ -135,53 +147,102 @@ https://api.open-meteo.com/v1/forecast
   ?latitude=18.6298
   &longitude=73.7997
   &timezone=Asia/Kolkata
-  &hourly=temperature_2m,relative_humidity_2m,precipitation,
-          precipitation_probability,cloud_cover,wind_speed_10m,
-          shortwave_radiation,direct_radiation,diffuse_radiation,
-          weather_code
+  &hourly=temperature_2m,relative_humidity_2m,dew_point_2m,apparent_temperature,
+          precipitation,precipitation_probability,cloud_cover,wind_speed_10m,
+          wind_gusts_10m,shortwave_radiation_instant,direct_radiation_instant,
+          diffuse_radiation_instant,direct_normal_irradiance_instant,weather_code
   &daily=sunrise,sunset
+  &past_days=…&forecast_days=…   # chosen automatically to cover --start-time
   &wind_speed_unit=kmh
 ```
 
+Radiation uses the `*_instant` variables: the plain ones are averages over the
+*preceding* hour, which shifts the PV curve ~30 min late when interpolated.
+
 Hourly keys live in `OPEN_METEO_HOURLY_FIELDS` in `config.py`. Daily keys live in `OPEN_METEO_DAILY_FIELDS`. Mapping from API names to `WeatherRecord` fields is `WEATHER_FIELD_MAP` in `models.py`.
+
+Every weather record is enriched with sun elevation/azimuth, clear-sky GHI,
+clearness index, `is_day`, a text `weather_condition` and (when missing)
+dew point, apparent temperature, gusts and DNI.
 
 ### Weather modes
 
 | Mode | Behaviour |
 |---|---|
-| `live` | HTTP GET to Open-Meteo. On failure, reuse the last cache; if there is no cache, use the deterministic fallback profile and set `data_quality` to `"fallback"`. |
-| `fallback` | Never calls the network. Uses a seeded local-climate profile. |
-| `historical-style` | Never calls the network. Same generator as fallback, tagged as a typical-year style series for agent/dashboard work. |
+| `live` | HTTP GET to Open-Meteo. On failure, reuse the last cache (retry after 5 min); if there is no cache, use the synthetic climate and set `data_quality` to `"fallback"`. |
+| `fallback` | Never calls the network. Seeded synthetic climate (below). |
+| `historical-style` | Same synthetic climate, tagged as a typical-year style series for agent/dashboard work. |
+
+### Synthetic climate (`engines/climate.py`)
+
+Offline weather is not one repeated day. Each day gets a regime — `clear`,
+`partly_cloudy`, `overcast`, `rain`, `storm` — from a persistent Markov chain
+weighted by the month (Indian monthly normals calibrated on Pune, adjusted for
+latitude and elevation; a generic model elsewhere). The regime drives
+Tmax/Tmin, dew point, cloud, rain hours, afternoon thunderstorms with gusts,
+and north-Indian winter fog. Calibration (10-year mean vs Pune climatology,
+kWh/m²/day GHI): Jan 4.8/5.0 · Apr 6.8/6.8 · Jul 3.8/3.9 · Oct 4.8/5.2.
+Weather is seeded by *location*, so neighbouring simulated homes share the
+same sky; any given day is reproducible regardless of the run's start date.
 
 ## How weather affects solar
 
 ```text
-solar_power_kw =
-    solar_capacity_kwp
-  × irradiance_factor          # shortwave_radiation_wm2 / 1000, clipped to 0–1.2
-  × solar_efficiency           # default 0.82
-  × shading_factor             # default 0.95
-  × temperature_factor         # derate above 25 °C
-  × cloud_factor / rain_factor # only when GHI is synthesized (clear-sky sine)
-  × small seeded noise
+plane-of-array irradiance (POA)  ← sun position (NOAA) + GHI/DNI/DHI,
+                                    tilt ≈ |lat| facing the equator,
+                                    Liu-Jordan diffuse, ground albedo, IAM
+cell temperature                 ← SAPM model (POA, ambient, wind)
+dc_kw = kWp × POA/1000
+      × solar_efficiency          # DC derate 0.92 (wiring, mismatch, LID)
+      × shading_factor            # 0.97
+      × temperature_factor        # −0.37 %/°C above 25 °C cell
+      × (1 − soiling)             # builds daily, washed by rain, periodic cleaning
+      × panel ageing              # 0.5 %/year
+ac_kw = inverter(dc_kw)           # part-load efficiency curve, sleep at dawn,
+                                  # clipping at inverter_capacity_kw
 ```
 
 Rules:
 
-- Power is **zero at night** (before sunrise / after sunset).
+- Power is **zero at night**; the inverter wakes and sleeps at low light.
 - Measured Open-Meteo GHI already includes clouds and rain — it is not derated again.
-- If `shortwave_radiation` is missing or zero during daylight, a sine daylight curve is used, then cloud/rain factors apply.
-- `sensor_failure` (degraded + GHI 0) stays at 0 — no sine fallback.
-- Inverter clipping: power never exceeds `inverter_capacity_kw`.
+- On partly cloudy skies, deterministic passing-cloud shadows cut the beam for
+  a minute or two (`cloud_shadow`), giving the fast ramps real inverters log.
+- `sensor_failure`: the irradiance feed drops out, but the panels keep
+  producing — power is estimated from clear sky and cloud cover
+  (`irradiance_source="estimated"`, `data_quality="degraded"`).
+- Typical Pune result: ~1,430 kWh/kWp/year; 5.0 kWh/kWp/day in April,
+  2.5–3.3 in the monsoon, peak ≈ 75–80 % of kWp on hot days.
 
 ## Energy flow order
 
 1. Solar → home  
-2. Solar surplus → battery  
-3. Remaining surplus → grid (clipped to 0 when `zero_export_mode` is true)  
-4. Battery → home  
+2. Solar surplus → battery (CC/CV taper above 90 % SOC, thermal derate)  
+3. Remaining surplus → grid (clipped by zero-export and by volt-watt when the feeder voltage is high)  
+4. Battery → home, down to a floor set by the goal  
 5. Grid → home  
-6. Unserved load if the grid is down and the battery is at minimum SOC  
+6. Grid → battery, only when the goal asks for it and the battery is not discharging  
+7. Unserved load if the grid is down and the battery cannot cover the rest
+
+Goals (`PRIMARY_GOAL`, from onboarding):
+
+| Goal | Battery behaviour |
+|---|---|
+| `maximize_self_consumption` | Discharge to the minimum SOC; never grid-charge |
+| `preserve_backup` | Keep `BATTERY_BACKUP_RESERVE_PERCENT` while the grid is up; grid-charge back to it if allowed |
+| `minimize_bill` | With a ToU tariff, hold the battery during off-peak and grid-charge to `GRID_CHARGE_TARGET_SOC_PERCENT`; spend it at peak |
+
+Outages: a grid-tied inverter **without a working battery shuts down**
+(anti-islanding), so solar is 0 and the whole load is unserved. With a
+battery, the backup port is limited to `INVERTER_CAPACITY_KW`; when demand
+exceeds what solar + battery can supply, the largest non-critical appliances
+are shed (`operating_mode="load_shed"`).
+
+Grid realism: feeder voltage sags in the evening peak and rises at midday;
+frequency drifts around 50 Hz; random feeder faults (Poisson per day, more in
+the monsoon and summer evenings, log-normal duration) are seeded by location
+so neighbours lose power together. `grid_status` is `available`, `outage`, or
+`off_grid` for homes that are not grid-connected.
 
 Battery charge and discharge are **separate non-negative fields**. Do not infer direction from the sign of a single power value.
 
@@ -222,7 +283,24 @@ Core fields (plus extra keys such as `schema_version`, `grid_voltage_v`, `warnin
 }
 ```
 
-`devices` is a list of refrigerator, washing machine, water heater, AC, and water pump readings. `weather` is the `WeatherRecord` used for that tick.
+`devices` is a list of refrigerator, washing machine, water heater, AC, and water pump readings (each with `operating_mode`, `energy_today_kwh`, `runtime_today_minutes`). `weather` is the `WeatherRecord` used for that tick.
+
+Extra fields added for analytics and the AI assistant (all optional for older readers):
+
+| Group | Fields |
+|---|---|
+| Labels | `scenario`, `scenario_description`, `active_conditions[]` (ground truth such as `grid_down:feeder_fault`, `inverter_clipping`, `panels_soiled`, `cloud_shadow`, `peak_tariff`, `night`) |
+| Events | `events[]` — `{type, severity, message, …}` on transitions: `grid_outage_started` / `grid_restored`, `battery_full`, `battery_reserve_reached`, `battery_fault`, `battery_derated`, `device_on` / `device_off` / `device_shed`, `inverter_clipping`, `export_curtailed`, `tariff_period_started`, `solar_production_started` / `ended`, `panels_cleaned`, `unserved_load`, `scenario_changed` |
+| PV / inverter | `solar_potential_kw`, `solar_dc_power_kw`, `solar_clipped_kw`, `solar_curtailed_kw`, `poa_irradiance_wm2`, `pv_cell_temperature_c`, `pv_temperature_loss_percent`, `pv_soiling_loss_percent`, `pv_shading_loss_percent`, `performance_ratio`, `inverter_status`, `inverter_efficiency_percent`, `cloud_shadow`, `irradiance_source`, `solar_peak_today_kw` |
+| Home | `home_load_served_kw`, `load_breakdown_kw{standby, lighting, fans, kitchen, entertainment, misc, tracked_devices}`, `occupancy_level`, `home_load_peak_today_kw`, `shed_device_ids` |
+| Battery | `battery_temperature_c`, `battery_fault_code`, `battery_derate_reason`, `battery_cycle_count`, `battery_capacity_effective_kwh`, `battery_charge/discharge_interval_kwh` and `_today_kwh`, `battery_discharge_floor_percent`, `battery_present`, `grid_to_battery_kw` |
+| Grid / money | `grid_voltage_v`, `grid_frequency_hz`, `grid_outage_cause`, `grid_outage_minutes_today`, `export_limit_kw`, `grid_import/export_today_kwh`, `tariff_type`, `tariff_period`, `tariff_rate_inr_per_kwh`, `export_credit_inr_per_kwh`, `grid_import_cost_interval_inr`, `grid_export_credit_interval_inr`, `grid_import_cost_today_inr`, `grid_export_credit_today_inr`, `net_energy_cost_today_inr` |
+| Daily KPIs | `self_consumption_percent_today`, `self_sufficiency_percent_today`, `unserved_energy_today_kwh`, `solar_curtailed_today_kwh` |
+| Context | `primary_goal`, `system{system_type, solar_capacity_kwp, inverter_capacity_kw, battery_capacity_kwh, panel_tilt_deg, panel_azimuth_deg, grid_connected, zero_export_mode}` |
+
+A home without a battery reports `battery_soc_percent=0`, `battery_status="unavailable"` and `battery_present=false` instead of a fake 60 %.
+
+`data/telemetry.jsonl` rotates at `OUTPUT_MAX_MB` (default 200 MB) keeping `OUTPUT_BACKUPS` old files.
 
 ## Inspect `telemetry.jsonl`
 
@@ -251,21 +329,40 @@ The `data/` directory is created automatically. It is gitignored.
 python -m simulator.main --scenario cloudy_day --weather-mode fallback --speed 0 --ticks 5 --pretty
 ```
 
+The full list (with descriptions) lives in `simulator/scenarios.py`:
+
 | Scenario | What it does |
 |---|---|
-| `normal_day` | Default household + weather |
-| `cloudy_day` | High cloud cover, reduced GHI |
-| `rainy_day` | Rain + heavy cloud, lower PV |
-| `battery_low` | Starts just above minimum SOC |
-| `battery_full` | Starts at 100% SOC |
-| `grid_outage` | `grid_available=false`, import is 0, unserved load possible |
-| `high_evening_load` | Stronger evening base load, AC forced on 17:00–23:00 |
-| `sensor_failure` | Radiation sensors drop out (`data_quality=degraded`) |
+| `normal_day` | Real weather, normal habits, rare random outages |
+| `cloudy_day` / `rainy_day` | Weather overlay: thick cloud / steady rain (panels get washed) |
+| `monsoon_storm` | Afternoon thunderstorm: gusts, intense rain, high outage risk |
+| `heatwave` / `winter_cold` | Air +5.5 °C (heavy AC, hot cells) / −7 °C (long geyser runs) |
+| `battery_low` / `battery_full` | Start just above the reserve / at 100 % |
+| `battery_degraded` | SOH ~72 %, lower efficiency, runs warmer |
+| `battery_overheat` | Sun-exposed enclosure: heats, derates, may trip fault code 2 |
+| `grid_outage` | Grid down all day; anti-islanding / backup limits apply |
+| `load_shedding` | Scheduled cuts 10:00–12:00 and 19:00–21:00 |
+| `voltage_rise` | Midday feeder over-voltage; inverter curtails export (volt-watt) |
+| `high_evening_load` | Evening base load ×1.85, AC forced on (warm season) |
+| `guests_party` | More cooking, lighting and AC in the evening |
+| `vacation` | House empty: fridge and standby only |
+| `ev_heavy` | Large EV charging sessions every night |
+| `dusty_panels` | ~18 % soiling loss |
+| `partial_shading` | Tree/building shades the array early and late |
+| `sensor_failure` | Irradiance feed drops out; PV estimated, `data_quality=degraded` |
+| `auto` | Season-aware mix: a different realistic scenario each day (≈65 % normal days) |
 
-Optional scheduled outage without the full `grid_outage` scenario:
+Use `auto` for training / evaluation data: each tick carries the scenario name
+and `active_conditions`, so models get labelled examples of outages, faults,
+clipping, curtailment, soiling, heatwaves and unusual household days.
+
+Grid events without a scenario:
 
 ```env
 GRID_OUTAGE_WINDOW=14:00-16:00
+LOAD_SHEDDING_WINDOWS=10:00-12:00,19:00-21:00
+FORCE_GRID_OUTAGE=false
+RANDOM_GRID_OUTAGES=true
 ```
 
 ## Change solar and battery size
@@ -352,14 +449,23 @@ See `.env.example` for the full list. Important ones:
 | `LATITUDE` / `LONGITUDE` | `18.6298` / `73.7997` |
 | `SOLAR_CAPACITY_KWP` | `5.0` |
 | `INVERTER_CAPACITY_KW` | `5.0` |
-| `SOLAR_EFFICIENCY` | `0.82` |
-| `SHADING_FACTOR` | `0.95` |
+| `SOLAR_EFFICIENCY` | `0.92` (DC derate only) |
+| `SHADING_FACTOR` | `0.97` |
+| `PANEL_TILT_DEG` / `PANEL_AZIMUTH_DEG` | auto (≈ latitude, facing the equator) |
+| `PANEL_CLEANING_INTERVAL_DAYS` | `15` |
+| `HOUSEHOLD_OCCUPANTS` / `WORK_FROM_HOME` | `4` / `false` |
 | `BATTERY_PRESENT` | `true` |
 | `BATTERY_CAPACITY_KWH` | `10.0` |
 | `INITIAL_BATTERY_SOC_PERCENT` | `60.0` |
 | `BATTERY_MINIMUM_SOC_PERCENT` | `20.0` |
-| `GRID_AVAILABLE` | `true` |
+| `BATTERY_CAN_CHARGE_FROM_GRID` | `false` (onboarding: `true` for Hybrid) |
+| `GRID_AVAILABLE` | `true` (`false` = off-grid home) |
 | `ZERO_EXPORT_MODE` | `false` |
+| `RANDOM_GRID_OUTAGES` / `GRID_OUTAGE_RATE_PER_DAY` | `true` / `0.08` |
+| `PRIMARY_GOAL` | `maximize_self_consumption` |
+| `TARIFF_TYPE` / `TARIFF_RATE_INR_PER_KWH` / `EXPORT_CREDIT_INR_PER_KWH` | `Flat rate` / `8.0` / `3.0` |
+| `PERSIST_STATE` / `STATE_DIR` | `true` / `data/state` |
+| `OUTPUT_MAX_MB` / `OUTPUT_BACKUPS` | `200` / `3` |
 | `SIMULATION_INTERVAL_SECONDS` | `60` |
 | `RANDOM_SEED` | `42` |
 | `WEATHER_REFRESH_MINUTES` | `30` |
@@ -379,7 +485,9 @@ source .venv/bin/activate
 pytest
 ```
 
-Coverage includes: night-time solar = 0, cloud and rain derating, inverter clip, SOC bounds, grid outage, zero-export, energy balance, Open-Meteo failure fallback, device contribution to load, and seeded repeatability.
+47 tests. `tests/test_simulator.py` covers the contract: night-time solar = 0, cloud and rain derating, inverter clip, SOC bounds, grid outage / off-grid, zero-export, energy balance, Open-Meteo failure fallback, device contribution to load, seeded repeatability, onboarding and transport.
+
+`tests/test_realism.py` covers the physics and behaviour: sunrise/sunset vs Open-Meteo, clear-sky and tilted-panel gain, day-to-day weather variety and order-independent determinism, monsoon vs winter, battery taper / no-battery reporting / overheating fault / SOH fade, anti-islanding, outage load shedding, preserve-backup reserve, ToU grid charging and peak pricing, volt-watt curtailment, outage events and labels, neighbour-shared random outages, the `auto` scenario mix, whole-day yield and load ranges, state persistence and JSONL rotation.
 
 ## Layout
 
@@ -388,8 +496,9 @@ simulator/
 ├── main.py                   # CLI (`python -m simulator.main`)
 ├── config.py                 # env + device catalog
 ├── models.py                 # WeatherRecord, TelemetryRecord, flows
-├── telemetry_generator.py    # one reading = all engines
-├── engines/                  # solar, load, battery, grid, device, energy_balance
+├── scenarios.py              # scenario registry + `auto` daily mix
+├── telemetry_generator.py    # one reading = all engines + events / labels / KPIs / state
+├── engines/                  # sun, climate, randomness, solar, load, device, battery, grid, energy_balance
 ├── clients/                  # Open-Meteo, optional HTTP ingest, RabbitMQ publisher
 ├── dashboard/                # HTTP/SSE server, live_bus, location_state
 ├── tests/

@@ -29,6 +29,15 @@ class AssistantAnswer(BaseModel):
     data_time: str
 
 
+class SourceOut(BaseModel):
+    document_id: str
+    title: str
+    doc_type: str
+    page: int | None = None
+    score: float
+    excerpt: str
+
+
 class FreshnessOut(BaseModel):
     status: Literal["fresh", "stale", "missing"]
     data_time: str | None = None
@@ -71,6 +80,7 @@ class AssistantResponse(BaseModel):
     tools_used: list[str]
     analytics_used: list[str]
     data_freshness: FreshnessOut
+    sources: list[SourceOut] = Field(default_factory=list)
     meta: AssistantMeta
 
 

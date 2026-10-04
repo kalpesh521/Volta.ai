@@ -24,12 +24,14 @@ from app.modules.assistant.schemas import (
     AssistantStatusOut,
     FreshnessOut,
     ModelStatusOut,
+    SourceOut,
     ToolCallOut,
     UsageOut,
 )
 from app.modules.assistant.tools.gateway import EnergyDataGateway
 from app.modules.assistant.tools.registry import build_energy_tools
 from app.modules.energy.service import EnergyService
+from app.modules.knowledge.service import KnowledgeService
 from app.modules.onboarding.models import SolarSystem
 
 logger = logging.getLogger("volta.assistant")
@@ -49,21 +51,37 @@ class AssistantService:
         llm: StructuredLLM,
         graph: CompiledStateGraph,
         settings: AISettings,
+        knowledge: KnowledgeService | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._energy = energy
         self._llm = llm
         self._graph = graph
         self._settings = settings
+        self._knowledge = knowledge
         self._clock = clock
 
     async def ask(self, system: SolarSystem, question: str, *, request_id: str) -> AssistantResponse:
         gateway = EnergyDataGateway(self._energy, system)
+
+        async def search_documents() -> dict[str, Any]:
+            if self._knowledge is None:
+                return {"available": False, "reason": "No knowledge base is configured for this request."}
+            grid = system.__dict__.get("grid_config")
+            discom = grid.discom if grid is not None else None
+            return await self._knowledge.retrieve_for_assistant(
+                user_id=system.user_id,
+                question=question,
+                brand=system.inverter_brand,
+                discom=discom,
+            )
+
         runtime = AssistantRuntime(
             tools=build_energy_tools(
                 gateway,
                 trend_window_minutes=self._settings.AI_TREND_WINDOW_MINUTES,
                 trend_history_limit=self._settings.AI_TREND_HISTORY_LIMIT,
+                knowledge_search=search_documents,
             ),
             llm=self._llm,
             settings=self._settings,
@@ -139,6 +157,7 @@ def to_response(
         appliance=state.get("appliance"),
         tools_used=[c.name for c in tool_calls if c.status == "ok"],
         analytics_used=state.get("analytics", {}).get("computed", []),
+        sources=_sources(state),
         data_freshness=FreshnessOut(
             status=freshness.get("status", "missing"),
             data_time=freshness.get("data_time"),
@@ -178,3 +197,14 @@ def assistant_status(settings: AISettings, llm: StructuredLLM, factory: ChatMode
         ),
         prompt_version=PROMPT_VERSION,
     )
+
+
+def _sources(state: AssistantState) -> list[SourceOut]:
+    passages = ((state.get("context") or {}).get("knowledge") or {}).get("passages") or []
+    sources: list[SourceOut] = []
+    for passage in passages:
+        try:
+            sources.append(SourceOut.model_validate(passage))
+        except (TypeError, ValueError):
+            continue
+    return sources

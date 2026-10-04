@@ -22,6 +22,9 @@ from dotenv import load_dotenv
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from simulator.engines.randomness import stable_hash
+from simulator.scenarios import SCENARIOS
+
 SIMULATOR_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SIMULATOR_DIR.parent
 
@@ -29,42 +32,27 @@ load_dotenv(SIMULATOR_DIR / ".env")
 load_dotenv()
 
 WeatherMode = Literal["live", "fallback", "historical-style"]
-ScenarioName = Literal[
-    "normal_day",
-    "cloudy_day",
-    "rainy_day",
-    "battery_low",
-    "battery_full",
-    "grid_outage",
-    "high_evening_load",
-    "sensor_failure",
-]
-
-SCENARIOS: tuple[str, ...] = (
-    "normal_day",
-    "cloudy_day",
-    "rainy_day",
-    "battery_low",
-    "battery_full",
-    "grid_outage",
-    "high_evening_load",
-    "sensor_failure",
-)
 
 WEATHER_MODES: tuple[str, ...] = ("live", "fallback", "historical-style")
 
 # Open-Meteo hourly keys. Add or remove entries here AND update
 # `WEATHER_FIELD_MAP` in models.py if the telemetry weather object should change.
+# Radiation uses the *_instant variants: the plain variables are averages of
+# the preceding hour, which shifts an interpolated PV curve ~30 min late.
 OPEN_METEO_HOURLY_FIELDS: tuple[str, ...] = (
     "temperature_2m",
     "relative_humidity_2m",
+    "dew_point_2m",
+    "apparent_temperature",
     "precipitation",
     "precipitation_probability",
     "cloud_cover",
     "wind_speed_10m",
-    "shortwave_radiation",
-    "direct_radiation",
-    "diffuse_radiation",
+    "wind_gusts_10m",
+    "shortwave_radiation_instant",
+    "direct_radiation_instant",
+    "diffuse_radiation_instant",
+    "direct_normal_irradiance_instant",
     "weather_code",
 )
 
@@ -165,11 +153,29 @@ class SimulatorConfig(BaseSettings):
     geocoding_language: str = "en"
     geocoding_timeout_seconds: float = 15.0
 
+    system_type: str = "Hybrid"
     solar_capacity_kwp: float = 5.0
     inverter_capacity_kw: float = 5.0
-    solar_efficiency: float = 0.82
-    shading_factor: float = 0.95
-    pv_temp_coefficient_per_c: float = 0.004
+    # DC-side derate only (wiring, mismatch, LID, nameplate tolerance).
+    # Temperature, soiling, reflection and inverter losses are modelled separately.
+    solar_efficiency: float = 0.92
+    shading_factor: float = 0.97
+    pv_temp_coefficient_per_c: float = 0.0037
+    # None = auto: tilt ≈ |latitude| (5–35°), facing the equator.
+    panel_tilt_deg: float | None = None
+    panel_azimuth_deg: float | None = None
+    ground_albedo: float = 0.2
+    panel_age_years: float = 1.0
+    panel_degradation_per_year: float = 0.005
+    clear_sky_turbidity: float = 0.92
+    cloud_transients: bool = True
+    soiling_rate_per_day: float = 0.0025
+    soiling_max_loss: float = 0.30
+    initial_soiling_loss_percent: float = 2.0
+    panel_cleaning_interval_days: int = 15
+
+    household_occupants: int = 4
+    work_from_home: bool = False
 
     battery_present: bool = True
     battery_capacity_kwh: float = 10.0
@@ -182,20 +188,53 @@ class SimulatorConfig(BaseSettings):
     battery_discharge_efficiency: float = 0.95
     battery_can_charge_from_grid: bool = False
     battery_soh_percent: float = 98.0
+    battery_cycle_life: int = 6000
+    battery_taper_start_soc: float = 90.0
+    battery_thermal_time_constant_minutes: float = 90.0
+    battery_max_temperature_c: float = 55.0
+    # Kept in the battery for outages when primary_goal=preserve_backup.
+    battery_backup_reserve_percent: float = 50.0
+    grid_charge_target_soc_percent: float = 80.0
 
+    # True = the home is grid-connected (On-grid / Hybrid). Momentary outages
+    # come from force_grid_outage, grid_outage_window, load_shedding_windows
+    # or the random outage model.
     grid_available: bool = True
+    force_grid_outage: bool = False
     zero_export_mode: bool = False
     zero_export_limit_kw: float = 0.0
     grid_nominal_voltage_v: float = 230.0
     grid_nominal_frequency_hz: float = 50.0
     grid_outage_window: str = ""
+    load_shedding_windows: str = ""
+    random_grid_outages: bool = True
+    grid_outage_rate_per_day: float = 0.08
+    grid_outage_median_minutes: float = 25.0
+    grid_voltage_upper_limit_v: float = 253.0
+    grid_feeder_v_per_kw: float = 1.2
+
+    # Defaults model a typical Indian residential net-metered connection;
+    # onboarding overrides them (None = unknown, cost fields become null).
+    primary_goal: str = "maximize_self_consumption"
+    tariff_type: str | None = "Flat rate"
+    tariff_rate_inr_per_kwh: float | None = 8.0
+    export_credit_inr_per_kwh: float | None = 3.0
+    meter_type: str | None = "Net meter"
+    tou_peak_windows: str = "18:00-22:00"
+    tou_peak_multiplier: float = 1.2
+    tou_offpeak_windows: str = "22:00-06:00"
+    tou_offpeak_multiplier: float = 0.8
 
     simulation_interval_seconds: int = 60
     random_seed: int = 42
     weather_refresh_minutes: int = 30
     weather_mode: WeatherMode = "live"
-    scenario: ScenarioName = "normal_day"
+    scenario: str = "normal_day"
     output_file: str = "data/telemetry.jsonl"
+    output_max_mb: float = 200.0
+    output_backups: int = 3
+    persist_state: bool = True
+    state_dir: str = "data/state"
     speed: float = 1.0
 
     # Optional FastAPI HTTP ingest (dev/tests). Empty URL disables it.
@@ -218,7 +257,7 @@ class SimulatorConfig(BaseSettings):
     open_meteo_timeout_seconds: float = 20.0
 
     energy_balance_tolerance_kw: float = 0.05
-    schema_version: str = "1.0.0"
+    schema_version: str = "1.1.0"
 
     device_catalog_json: str = ""
 
@@ -227,6 +266,13 @@ class SimulatorConfig(BaseSettings):
     def _interval_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("simulation_interval_seconds must be > 0")
+        return value
+
+    @field_validator("scenario")
+    @classmethod
+    def _known_scenario(cls, value: str) -> str:
+        if value not in SCENARIOS:
+            raise ValueError(f"unknown scenario {value!r}; choose one of {', '.join(SCENARIOS)}")
         return value
 
     @model_validator(mode="after")
@@ -249,6 +295,32 @@ class SimulatorConfig(BaseSettings):
     def interval_hours(self) -> float:
         return self.simulation_interval_seconds / 3600.0
 
+    @property
+    def household_seed(self) -> int:
+        """Per-home randomness: habits, device timing, cloud shadows."""
+        return self.random_seed ^ stable_hash(self.household_id)
+
+    @property
+    def location_seed(self) -> int:
+        """Shared by homes in the same ~10 km cell: weather regimes, grid feeder outages."""
+        return self.random_seed ^ stable_hash(f"{self.latitude:.1f},{self.longitude:.1f}")
+
+    @property
+    def tilt_deg(self) -> float:
+        if self.panel_tilt_deg is not None:
+            return min(90.0, max(0.0, self.panel_tilt_deg))
+        return min(35.0, max(5.0, round(abs(self.latitude))))
+
+    @property
+    def azimuth_deg(self) -> float:
+        if self.panel_azimuth_deg is not None:
+            return self.panel_azimuth_deg % 360.0
+        return 180.0 if self.latitude >= 0 else 0.0
+
+    @property
+    def synthetic_weather(self) -> bool:
+        return self.weather_mode in ("fallback", "historical-style")
+
     def device_catalog(self) -> list[dict[str, Any]]:
         raw = self.device_catalog_json.strip()
         if not raw:
@@ -264,11 +336,21 @@ class SimulatorConfig(BaseSettings):
             path = SIMULATOR_DIR / path
         return path
 
+    def state_path(self) -> Path:
+        path = Path(self.state_dir)
+        if not path.is_absolute():
+            path = SIMULATOR_DIR / path
+        return path / f"{self.household_id}.json"
+
 
 def apply_scenario(config: SimulatorConfig, scenario: str) -> SimulatorConfig:
-    """Return a copy of config with scenario-specific overrides applied."""
+    """Return a copy of config with start-up scenario overrides applied.
+
+    Day-level effects (weather, habits, grid events) are applied by the
+    engines each tick so `auto` can switch scenario per simulated day.
+    """
     updated = config.model_copy(deep=True)
-    updated.scenario = scenario  # type: ignore[assignment]
+    updated.scenario = scenario
 
     if scenario == "battery_low":
         updated.initial_battery_soc_percent = min(
@@ -276,6 +358,13 @@ def apply_scenario(config: SimulatorConfig, scenario: str) -> SimulatorConfig:
         )
     elif scenario == "battery_full":
         updated.initial_battery_soc_percent = 100.0
+    elif scenario == "battery_degraded":
+        updated.battery_soh_percent = min(updated.battery_soh_percent, 72.0)
+        updated.battery_charge_efficiency = min(updated.battery_charge_efficiency, 0.91)
+        updated.battery_discharge_efficiency = min(updated.battery_discharge_efficiency, 0.91)
     elif scenario == "grid_outage":
-        updated.grid_available = False
+        updated.force_grid_outage = True
+    elif scenario == "dusty_panels":
+        updated.initial_soiling_loss_percent = max(updated.initial_soiling_loss_percent, 18.0)
+        updated.panel_cleaning_interval_days = 0
     return updated

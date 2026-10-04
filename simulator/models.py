@@ -25,13 +25,17 @@ class ExtensibleModel(BaseModel):
 WEATHER_FIELD_MAP: dict[str, str] = {
     "temperature_2m": "temperature_c",
     "relative_humidity_2m": "humidity_percent",
+    "dew_point_2m": "dew_point_c",
+    "apparent_temperature": "apparent_temperature_c",
     "cloud_cover": "cloud_cover_percent",
     "precipitation": "precipitation_mm",
     "precipitation_probability": "precipitation_probability_percent",
     "wind_speed_10m": "wind_speed_kmh",
-    "shortwave_radiation": "shortwave_radiation_wm2",
-    "direct_radiation": "direct_radiation_wm2",
-    "diffuse_radiation": "diffuse_radiation_wm2",
+    "wind_gusts_10m": "wind_gusts_kmh",
+    "shortwave_radiation_instant": "shortwave_radiation_wm2",
+    "direct_radiation_instant": "direct_radiation_wm2",
+    "diffuse_radiation_instant": "diffuse_radiation_wm2",
+    "direct_normal_irradiance_instant": "direct_normal_irradiance_wm2",
     "weather_code": "weather_code",
 }
 
@@ -52,6 +56,19 @@ class WeatherRecord(ExtensibleModel):
     sunset: datetime | None = None
     source: str = "open-meteo"
     data_quality: str = "simulated"
+
+    # Enrichment (optional so older JSONL / backend payloads still validate).
+    direct_normal_irradiance_wm2: float | None = None
+    dew_point_c: float | None = None
+    apparent_temperature_c: float | None = None
+    wind_gusts_kmh: float | None = None
+    weather_condition: str | None = None
+    is_day: bool | None = None
+    sun_elevation_deg: float | None = None
+    sun_azimuth_deg: float | None = None
+    clear_sky_ghi_wm2: float | None = None
+    clearness_index: float | None = None
+    day_regime: str | None = None
 
     @field_validator(
         "shortwave_radiation_wm2",
@@ -132,6 +149,9 @@ class DeviceReading(ExtensibleModel):
     critical: bool
     controllable: bool
     device_priority: str = "flexible"
+    operating_mode: str | None = None
+    energy_today_kwh: float = Field(ge=0, default=0.0)
+    runtime_today_minutes: float = Field(ge=0, default=0.0)
 
 
 class EnergyFlows(ExtensibleModel):

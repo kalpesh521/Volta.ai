@@ -12,3 +12,9 @@ from app.modules.onboarding.models import BatteryConfig  # noqa: F401
 from app.modules.onboarding.models import GridConfig  # noqa: F401
 from app.modules.onboarding.models import SolarSystem  # noqa: F401
 from app.modules.onboarding.models import TrackedAppliance  # noqa: F401
+
+from app.modules.assistant.actions.models import ActionProposal  # noqa: F401
+from app.modules.knowledge.models import BillExtraction  # noqa: F401
+from app.modules.knowledge.models import KnowledgeChunk  # noqa: F401
+from app.modules.knowledge.models import KnowledgeDocument  # noqa: F401
+from app.modules.knowledge.models import KnowledgeReview  # noqa: F401

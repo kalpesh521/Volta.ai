@@ -40,6 +40,7 @@ class ToolName(StrEnum):
     WEATHER_DATA = "get_weather_data"
     RECENT_TREND = "get_recent_trend"
     HOUSEHOLD_PROFILE = "get_household_profile"
+    SEARCH_KNOWLEDGE = "search_knowledge"
 
 
 class NoArgs(BaseModel):
@@ -71,6 +72,7 @@ def build_energy_tools(
     *,
     trend_window_minutes: int = 60,
     trend_history_limit: int = 240,
+    knowledge_search: Callable[[], Awaitable[ToolResult]] | None = None,
 ) -> dict[ToolName, BaseTool]:
     async def get_live_energy_state() -> ToolResult:
         live = await gateway.live()
@@ -132,6 +134,12 @@ def build_energy_tools(
     async def get_household_profile() -> ToolResult:
         return household_facts(gateway.profile(), gateway.onboarding_details()).model_dump(mode="json")
 
+    async def search_knowledge() -> ToolResult:
+        """Manuals, policies, tariffs, help, and this user's documents. Not live power."""
+        if knowledge_search is None:
+            return unavailable("No knowledge base is configured for this request.")
+        return await knowledge_search()
+
     specs: tuple[tuple[ToolName, Callable[..., Awaitable[ToolResult]], type[BaseModel], str], ...] = (
         (
             ToolName.LIVE_ENERGY_STATE,
@@ -187,6 +195,14 @@ def build_energy_tools(
             NoArgs,
             "Home setup entered at onboarding: location, panels, inverter, battery, grid meter, DISCOM, "
             "sanctioned load, tariff, monthly bill, goal and tracked appliances.",
+        ),
+        (
+            ToolName.SEARCH_KNOWLEDGE,
+            search_knowledge,
+            NoArgs,
+            "Search reviewed manuals, fault codes, policies, tariff orders, help articles, and this user's "
+            "bills and warranty documents. Returns excerpts with title and page, plus structured bill fields. "
+            "Do not use for live battery charge, current solar power, or grid import.",
         ),
     )
     return {

@@ -35,6 +35,7 @@ class FallbackReason(StrEnum):
     DEVICE_CONTROL = "device_control"
     OUT_OF_SCOPE = "out_of_scope"
     NO_DATA = "no_data"
+    KNOWLEDGE_GAP = "knowledge_gap"
     LLM_UNAVAILABLE = "llm_unavailable"
     LLM_ERROR = "llm_error"
 
@@ -199,6 +200,49 @@ def _home_profile_answer(ctx: AIContext) -> AnswerDraft | None:
     )
 
 
+def _knowledge_gap_answer(ctx: AIContext) -> AnswerDraft:
+    kind = ctx.knowledge.gap_kind if ctx.knowledge else None
+    if kind == "fault_code":
+        return AnswerDraft(
+            observation="That fault code is not in the manuals uploaded for Suryaa.",
+            explanation="I only quote a fault code when the reviewed inverter or battery manual contains it.",
+            recommendation="Contact your installer and share the exact code on the inverter display. I will not guess.",
+            estimated_impact="None.",
+        )
+    return AnswerDraft(
+        observation="I could not find that in the documents available for your home.",
+        explanation="Policies, tariffs, manuals, bills and warranties are answered from uploaded documents, not from memory.",
+        recommendation="Ask a Suryaa admin to publish the document, or upload your own bill or warranty.",
+        estimated_impact="None.",
+    )
+
+
+def _document_answer(ctx: AIContext) -> AnswerDraft | None:
+    knowledge = ctx.knowledge
+    if knowledge is None:
+        return None
+    parts: list[str] = []
+    bill = knowledge.bill or {}
+    if bill.get("units_kwh") is not None:
+        parts.append(f"The bill records {bill['units_kwh']:.0f} kWh.")
+    if bill.get("tariff_category"):
+        parts.append(f"Tariff category: {bill['tariff_category']}.")
+    if bill.get("sanctioned_load_kw") is not None:
+        parts.append(f"Sanctioned load on the bill: {bill['sanctioned_load_kw']:.2f} kW.")
+    if knowledge.passages:
+        first = knowledge.passages[0]
+        page = f" page {first.page}" if first.page else ""
+        parts.append(f"From {first.title}{page}: {first.excerpt}")
+    if not parts:
+        return None
+    return AnswerDraft(
+        observation=parts[0],
+        explanation=" ".join(parts),
+        recommendation="Use the cited document for the exact wording. Live solar and battery numbers come from your energy readings, not from these documents.",
+        estimated_impact="Informational only.",
+    )
+
+
 def compose_fallback_answer(
     *,
     reason: FallbackReason,
@@ -230,6 +274,8 @@ def compose_fallback_answer(
             recommendation="Check that your system or simulator is online and sending data, then ask again.",
             estimated_impact="Not enough data to estimate.",
         )
+    if reason is FallbackReason.KNOWLEDGE_GAP:
+        return _knowledge_gap_answer(context)
 
     primary = intents[0] if intents else Intent.LIVE_OVERVIEW
     no_model_note = reason in (FallbackReason.LLM_UNAVAILABLE, FallbackReason.LLM_ERROR)
@@ -240,6 +286,13 @@ def compose_fallback_answer(
             if no_model_note:
                 profile.explanation += " (Summary generated without the AI model.)"
             return profile
+
+    if primary is Intent.DOCUMENT and context.knowledge is not None:
+        drafted = _document_answer(context)
+        if drafted is not None:
+            if no_model_note:
+                drafted.explanation += " (Summary generated without the AI model.)"
+            return drafted
 
     observation_parts = [p for p in (_live_sentence(context), _daily_sentence(context)) if p]
     explanation_parts = [p for p in (_surplus_explanation(analytics), _top_anomaly(analytics)) if p]

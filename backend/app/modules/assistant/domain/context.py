@@ -251,6 +251,21 @@ class HourlyFacts(BaseModel):
     peak_import_hour: str | None = None
 
 
+class KnowledgePassageFacts(BaseModel):
+    document_id: str
+    title: str
+    doc_type: str
+    page: int | None = None
+    excerpt: str
+    score: float
+
+
+class KnowledgeFacts(BaseModel):
+    passages: list[KnowledgePassageFacts] = Field(default_factory=list)
+    bill: dict[str, Any] | None = None
+    gap_kind: str | None = None
+
+
 class AIContext(BaseModel):
     """The single structured object the answer LLM receives."""
 
@@ -263,6 +278,7 @@ class AIContext(BaseModel):
     today_summary: DailyFacts | None = None
     hourly_summary: HourlyFacts | None = None
     recent_trend: TrendFacts | None = None
+    knowledge: KnowledgeFacts | None = None
     preferences: dict[str, Any] = Field(default_factory=dict)
 
     def prompt_payload(self) -> dict[str, Any]:

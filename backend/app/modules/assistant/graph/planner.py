@@ -125,6 +125,13 @@ INTENT_PLANS: dict[Intent, IntentPlan] = {
         (D.WEATHER_DETAIL,),
     ),
     Intent.DEVICE_CONTROL: _plan((), (), requires_telemetry=False, live_advice=False),
+    Intent.DOCUMENT: _plan(
+        (T.SEARCH_KNOWLEDGE, T.HOUSEHOLD_PROFILE),
+        (),
+        (D.HARDWARE, D.GRID_CONTRACT, D.BILLING),
+        requires_telemetry=False,
+        live_advice=False,
+    ),
     Intent.OUT_OF_SCOPE: _plan((), (), requires_telemetry=False, live_advice=False),
 }
 

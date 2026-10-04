@@ -61,6 +61,7 @@ _CONTEXT_FIELDS: dict[ToolName, str] = {
     ToolName.DAILY_ENERGY_SUMMARY: "today_summary",
     ToolName.HOURLY_ENERGY_SUMMARY: "hourly_summary",
     ToolName.RECENT_TREND: "recent_trend",
+    ToolName.SEARCH_KNOWLEDGE: "knowledge",
 }
 
 _BLOCKED: dict[Intent, FallbackReason] = {
@@ -200,6 +201,9 @@ def analyze(state: AssistantState, runtime: Runtime[AssistantRuntime]) -> dict[s
 
     primary = _primary_intent(state)
     reason: FallbackReason | None = _BLOCKED.get(primary)
+    knowledge = state.get("tool_results", {}).get(ToolName.SEARCH_KNOWLEDGE.value) or {}
+    if reason is None and primary is Intent.DOCUMENT and not knowledge.get("passages") and not knowledge.get("bill"):
+        reason = FallbackReason.KNOWLEDGE_GAP
     if reason is None and freshness.status is FreshnessStatus.MISSING and (
         state.get("requires_telemetry", True) or context.household is None
     ):
@@ -208,6 +212,11 @@ def analyze(state: AssistantState, runtime: Runtime[AssistantRuntime]) -> dict[s
         reason = FallbackReason.LLM_UNAVAILABLE
 
     full_payload = context.prompt_payload()
+    if reason is FallbackReason.KNOWLEDGE_GAP:
+        full_payload["knowledge"] = {
+            "passages": [],
+            "gap_kind": knowledge.get("gap_kind") or "missing",
+        }
     analytics_payload = bundle.prompt_payload()
     freshness_payload = freshness.model_dump(mode="json")
     prompt_facts, prompt_analytics, prompt_freshness = project_prompt(
@@ -288,7 +297,11 @@ def fallback(state: AssistantState) -> dict[str, Any]:
 
 def _confidence(state: AssistantState, freshness: DataFreshness) -> str:
     reason = state.get("fallback_reason")
-    if reason in (FallbackReason.DEVICE_CONTROL.value, FallbackReason.OUT_OF_SCOPE.value):
+    if reason in (
+        FallbackReason.DEVICE_CONTROL.value,
+        FallbackReason.OUT_OF_SCOPE.value,
+        FallbackReason.KNOWLEDGE_GAP.value,
+    ):
         return "high"
     if freshness.status is not FreshnessStatus.FRESH:
         if state.get("requires_telemetry", True):
@@ -315,4 +328,20 @@ def finalize(state: AssistantState) -> dict[str, Any]:
     answer["data_time"] = (
         freshness.data_time.isoformat() if freshness.data_time else "unavailable"
     )
+    _append_citations(answer, state)
     return {"answer": answer, "confidence": _confidence(state, freshness)}
+
+
+def _append_citations(answer: dict[str, Any], state: AssistantState) -> None:
+    passages = ((state.get("context") or {}).get("knowledge") or {}).get("passages") or []
+    if not passages:
+        return
+    labels = []
+    for passage in passages[:3]:
+        page = passage.get("page")
+        title = passage.get("title") or "document"
+        labels.append(f"{title} p.{page}" if page else title)
+    suffix = " Sources: " + "; ".join(labels) + "."
+    explanation = answer.get("explanation") or ""
+    if "Sources:" not in explanation:
+        answer["explanation"] = explanation.rstrip() + suffix

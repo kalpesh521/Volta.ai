@@ -18,6 +18,8 @@ from app.modules.assistant.graph.builder import build_assistant_graph
 from app.modules.assistant.service import AssistantService
 from app.modules.energy.deps import get_energy_service
 from app.modules.energy.service import EnergyService
+from app.modules.knowledge.deps import get_knowledge_service
+from app.modules.knowledge.service import KnowledgeService
 
 
 def get_assistant_settings() -> AISettings:
@@ -44,5 +46,6 @@ def get_assistant_service(
     llm: StructuredLLM = Depends(get_structured_llm),
     graph: CompiledStateGraph = Depends(get_assistant_graph),
     settings: AISettings = Depends(get_assistant_settings),
+    knowledge: KnowledgeService = Depends(get_knowledge_service),
 ) -> AssistantService:
-    return AssistantService(energy=energy, llm=llm, graph=graph, settings=settings)
+    return AssistantService(energy=energy, llm=llm, graph=graph, settings=settings, knowledge=knowledge)

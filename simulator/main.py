@@ -63,6 +63,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Stop after N readings (0 = run until Ctrl+C)",
     )
+    parser.add_argument(
+        "--days",
+        type=float,
+        help="Backfill N simulated days from --start-time (sets --ticks; default speed 0)",
+    )
+    parser.add_argument(
+        "--fresh-state",
+        action="store_true",
+        help="Ignore saved counters / battery state and start from config values",
+    )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON to stdout")
     parser.add_argument(
         "--dashboard",
@@ -159,6 +169,8 @@ def apply_cli_overrides(config: SimulatorConfig, args: argparse.Namespace) -> Si
         updates["from_onboarding"] = True
     if args.api_url:
         updates["backend_url"] = args.api_url
+    if getattr(args, "days", None) and args.speed is None:
+        updates["speed"] = 0.0
     merged = config.model_copy(update=updates)
     return apply_scenario(merged, merged.scenario)
 
@@ -306,6 +318,7 @@ async def run(
     dashboard_port: int = 8765,
     live_clock: bool = True,
     household_from_cli: bool = False,
+    fresh_state: bool = False,
 ) -> None:
     from simulator.dashboard import location_state
 
@@ -329,6 +342,12 @@ async def run(
         )
 
     generators = [TelemetryGenerator(item) for item in configs]
+    # Saved state belongs to the live timeline; backfills start clean.
+    persist = live_clock and config.persist_state
+    if persist and not fresh_state:
+        for generator in generators:
+            if generator.load_state():
+                logger.info("Resumed saved state for household=%s", generator.config.household_id)
     location_state.active_generator = generators[0]
     output_path = generators[0].open_output()
     tz = ZoneInfo(configs[0].timezone)
@@ -368,6 +387,17 @@ async def run(
     sim_ts = first_ts
     count = 0
     last_profile_refresh = first_ts
+    last_state_save = datetime.now(tz=tz)
+
+    def save_states() -> None:
+        if not persist:
+            return
+        for generator in generators:
+            try:
+                generator.save_state()
+            except OSError as exc:
+                logger.warning("could not save state for %s: %s", generator.config.household_id, exc)
+
     try:
         for generator in generators:
             await generator.warmup(first_ts)
@@ -395,6 +425,9 @@ async def run(
                     else:
                         print(record.model_dump_json(), flush=True)
             count += 1
+            if persist and (datetime.now(tz=tz) - last_state_save).total_seconds() >= 30:
+                save_states()
+                last_state_save = datetime.now(tz=tz)
             if ticks > 0 and count >= ticks:
                 break
             if live_clock:
@@ -418,6 +451,7 @@ async def run(
         logger.info("Stopped by user after %s readings", count)
     finally:
         location_state.request_stop()
+        save_states()
         for generator in generators:
             generator.close_output()
         if ingest_client is not None:
@@ -437,13 +471,18 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = apply_cli_overrides(SimulatorConfig(), args)
     start = parse_start_time(args.start_time, config.timezone)
-    live_clock = args.start_time is None
+    live_clock = args.start_time is None and not args.days
+    ticks = args.ticks
+    if args.days:
+        if args.start_time is None:
+            start = start.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=args.days)
+        ticks = max(1, int(args.days * 86400 / config.simulation_interval_seconds))
     try:
         asyncio.run(
             run(
                 config,
                 start,
-                args.ticks,
+                ticks,
                 args.pretty,
                 quiet=args.quiet or args.dashboard,
                 dashboard=args.dashboard,
@@ -451,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
                 dashboard_port=args.dashboard_port,
                 live_clock=live_clock,
                 household_from_cli=bool(args.household_id),
+                fresh_state=args.fresh_state,
             )
         )
     except KeyboardInterrupt:
