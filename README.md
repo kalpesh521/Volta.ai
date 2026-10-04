@@ -4,7 +4,7 @@ Monorepo for the Suryaa / Volta solar-home product: FastAPI backend, static fron
 
 ```
 volta.ai/
-├── backend/          FastAPI API (auth, onboarding) — PostgreSQL + Alembic
+├── backend/          FastAPI API (auth, onboarding, energy, AI assistant) — PostgreSQL + Alembic
 ├── frontend/         Static HTML (dashboard + demo)
 │   └── public/
 ├── simulator/        Standalone solar-home telemetry generator
@@ -59,6 +59,10 @@ Health: http://localhost:8000/health
 ```bash
 pytest -v
 ```
+
+AI assistant (read-only, LangChain + LangGraph): add one LLM key to `backend/.env`
+(cheapest: `GOOGLE_API_KEY` with `gemini-3.5-flash-lite`), then `POST /assistant/me/ask`.
+See [docs/ai_implementation_report.md](docs/ai_implementation_report.md).
 
 ## Simulator
 

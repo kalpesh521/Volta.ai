@@ -11,10 +11,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 
+from app.ai.config import ai_settings
+from app.ai.observability import configure_tracing
 from app.core.config import settings
 from app.core.cors import cors_origin_regex
 from app.core.exceptions import register_exception_handlers
 from app.core.rate_limit import limiter
+from app.modules.assistant.router import router as assistant_router
 from app.modules.auth.oauth_router import router as oauth_router
 from app.modules.auth.router import router as auth_router
 from app.modules.energy.router import router as energy_router
@@ -42,6 +45,8 @@ async def lifespan(app: FastAPI):
                 "INGEST_HTTP_ENABLED must be false when ENVIRONMENT=production "
                 "(simulator publishes to RabbitMQ; the worker consumes)"
             )
+
+    configure_tracing(ai_settings)
 
     app.state.timescale = None
     app.state.redis_live = None
@@ -108,6 +113,7 @@ app.include_router(oauth_router)        # /auth/google/*
 app.include_router(onboarding_router)   # /onboarding/*
 app.include_router(energy_router)       # /energy/*
 app.include_router(energy_ws_router)    # /ws/energy
+app.include_router(assistant_router)    # /assistant/*  read-only AI assistant
 app.include_router(webui_router)        # /ui  temporary energy HTML (not production)
 
 

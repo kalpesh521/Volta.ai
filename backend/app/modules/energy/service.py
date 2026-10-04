@@ -185,7 +185,8 @@ def to_battery(record: TelemetryRecord) -> BatteryStatusOut:
         energy_available_kwh=record.battery_energy_available_kwh,
         status=record.battery_status,
         temperature_c=extra.get("battery_temperature_c"),
-        fault_code=str(fault) if fault not in (None, "") else None,
+        # The simulator reports 0 for "no fault".
+        fault_code=str(fault) if fault not in (None, "", 0, "0") else None,
     )
 
 

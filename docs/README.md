@@ -11,6 +11,8 @@ docs/
 ├── onboarding.md              Post-signup solar wizard
 ├── simulator.md               Tick physics + live dashboard
 ├── telemetry_ingest.md        RabbitMQ → worker → Timescale + Redis
+├── ai_architecture.md         AI assistant design (LangChain + LangGraph)
+├── ai_implementation_report.md  What was built, setup, evals, cost
 ├── auth.html · onboarding.html · simulator.html · telemetry-ingest.html
 └── assets/                    Shared CSS + JS
 ```
@@ -27,6 +29,7 @@ Source `.txt` files stay in this folder as the raw revision notes. The `.md` fil
 | 2 | [Onboarding](./onboarding.md) | How a home is configured after signup | FastAPI · 4 tables · JWT reuse |
 | 3 | [Simulator](./simulator.md) | How **one tick** is calculated | Pydantic · Open-Meteo · stdlib SSE |
 | 4 | [Telemetry ingest](./telemetry_ingest.md) | What happens **after** the tick is JSON | RabbitMQ · Timescale · Redis · WS |
+| 5 | [AI architecture](./ai_architecture.md) · [report](./ai_implementation_report.md) | How Suryaa answers energy questions (read-only) | LangChain · LangGraph · any LLM provider |
 
 Do not mix the last two. The simulator never sees Redis or Timescale. The ingest worker never computes PV physics.
 
@@ -94,3 +97,5 @@ flowchart LR
 **Simulator.** One tick composes weather, PV, load, battery, and grid. Night solar is zero. Charge and discharge are separate kW fields. Energy-balance warnings never stop the loop.
 
 **Ingest.** Simulator publishes. Worker validates, upserts Timescale, updates Redis, then ACKs. API serves JWT REST + WebSocket. Auth stays on Neon.
+
+**AI assistant.** LangGraph classifies the question, runs read-only energy tools in parallel, computes every number deterministically, and lets the LLM only explain those facts. No DB access, no device control, works without an API key.

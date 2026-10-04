@@ -12,6 +12,7 @@ PostgreSQL, and JWT-based auth (password + Google OAuth2/OIDC).
 - **httpx** + **PyJWT's JWKS client** for Google OAuth2 / OIDC verification
 - **slowapi** for rate limiting
 - **pytest** + **httpx.AsyncClient** for integration tests (SQLite in-memory)
+- **LangChain** + **LangGraph** for the read-only AI assistant (any LLM provider)
 
 ## Project layout
 
@@ -21,10 +22,13 @@ backend/
   app/
     main.py               FastAPI app: CORS, rate limit, routers
     core/                 shared infra (config, db, security, get_current_user)
+    ai/                   AI platform: settings, provider registry, model factory, LLM gateway
     models/               shared ORM tables + Alembic barrel (User, tokens, …)
     modules/
       auth/               vertical slice: router, service, repos, oauth, schemas
       onboarding/         vertical slice: router, service, repo, models, schemas
+      energy/             live / daily / hourly telemetry reads
+      assistant/          AI assistant: domain, prompts, tools, LangGraph graph, API
   tests/                  pytest suite (outside the app package)
   alembic/                migrations
 ```
@@ -246,6 +250,23 @@ Postgres in production and SQLite in tests. Google OAuth tests use a fake
 | GET    | `/energy/{id}/daily`          | Bearer JWT  | daily kWh totals (`?date=YYYY-MM-DD`) |
 | GET    | `/energy/{id}/hourly`         | Bearer JWT  | 24 hourly kWh buckets for one date |
 | GET    | `/energy/{id}/profile`        | JWT or X-Ingest-Token | onboarding → simulator knobs |
+| GET    | `/assistant/status`           | Bearer JWT  | AI mode (`llm` / `deterministic`) and configured models |
+| POST   | `/assistant/me/ask`           | Bearer JWT  | read-only energy Q&A for the primary home; rate-limited |
+| POST   | `/assistant/{id}/ask`         | Bearer JWT  | same, for a home the caller owns |
+
+### AI assistant
+
+Set one provider key in `.env` (cheapest: `AI_LLM_PROVIDER=google_genai`,
+`AI_LLM_MODEL=gemini-3.5-flash-lite`, `GOOGLE_API_KEY=...`). Without a key the
+assistant still answers from deterministic analytics. Design:
+[docs/ai_architecture.md](../docs/ai_architecture.md) · setup, evals and cost:
+[docs/ai_implementation_report.md](../docs/ai_implementation_report.md).
+
+```bash
+curl -s -X POST localhost:8000/assistant/me/ask \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"question":"Should I run the geyser?"}'
+```
 
 Point the simulator at the API. With RabbitMQ or `--from-onboarding` and no `--household-id`, it loads **every** completed home so `/energy/me/live` works from the login token alone:
 
