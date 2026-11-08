@@ -31,3 +31,8 @@ venv/
 simulator/.env
 simulator/.venv/
 simulator/data/
+
+# Compose overrides / local secrets
+/.env
+backend/.env
+backend/var/

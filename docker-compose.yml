@@ -1,61 +1,230 @@
-# Local telemetry infra for the backend ingest pipeline.
-# Neon (DATABASE_URL) stays the auth/onboarding database — do not put
-# telemetry hypertables there.
+# Volta.ai — full stack in one command:
 #
-#   docker compose up -d
-#   docker compose ps
-#   RabbitMQ UI: http://127.0.0.1:15672  (volta / volta)
+#   docker compose up -d --build        # build images, start everything in dependency order
+#   docker compose ps                   # health of every service
+#   docker compose logs -f api          # follow one service
+#   docker compose down                 # stop (data kept)    |  down -v  = also wipe all data
 #
-# Production later: replace these URLs with CloudAMQP / Timescale Cloud / Redis Cloud.
+# Startup order (enforced by healthchecks, not sleeps):
+#   postgres / timescaledb / redis / rabbitmq  ->  migrate (alembic, runs once)
+#     ->  api  ->  ingest-worker, device-worker, simulator
+#
+# URLs once up (host ports are overridable in .env, see .env.example):
+#   API + docs        http://127.0.0.1:8000/docs        Energy console  http://127.0.0.1:8000/ui/energy
+#   Live dashboard    http://127.0.0.1:8765             RabbitMQ UI     http://127.0.0.1:15672
+#
+# Config: secrets and AI keys come from backend/.env (optional, gitignored).
+# Service hostnames below always win over any localhost values in that file.
+# Infra ports are published on 127.0.0.1 only. Never expose them on a public interface.
+
+name: volta
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Settings shared by every Python service built from backend/Dockerfile.
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  image: volta-backend:local
+  env_file:
+    - path: backend/.env
+      required: false
+  environment: &backend-env
+    ENVIRONMENT: ${APP_ENV:-development}
+    DATABASE_URL: postgresql+asyncpg://volta:${POSTGRES_PASSWORD:-volta}@postgres:5432/volta_auth
+    DB_SSL_REQUIRED: "false"
+    TIMESCALE_DATABASE_URL: postgresql+asyncpg://volta:${TIMESCALE_PASSWORD:-volta}@timescaledb:5432/volta_ts
+    TIMESCALE_SSL_REQUIRED: "false"
+    REDIS_URL: redis://redis:6379/0
+    RABBITMQ_URL: amqp://volta:${RABBITMQ_PASSWORD:-volta}@rabbitmq:5672/volta
+    INGEST_TOKEN: ${INGEST_TOKEN:-dev-ingest-token}
+    TELEMETRY_IO_ENABLED: "true"
+  restart: unless-stopped
+  logging: *default-logging
+  networks: [volta]
 
 services:
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    ports:
-      - "5672:5672"
-      - "15672:15672"
+  # ---------------------------------------------------------------- data stores
+  postgres:
+    # Auth / onboarding / knowledge DB. pgvector is required by the knowledge migration.
+    image: pgvector/pgvector:pg16
     environment:
-      RABBITMQ_DEFAULT_USER: volta
-      RABBITMQ_DEFAULT_PASS: volta
-      RABBITMQ_DEFAULT_VHOST: volta
+      POSTGRES_USER: volta
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volta}
+      POSTGRES_DB: volta_auth
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - postgres_data:/var/lib/postgresql/data
+    shm_size: 128mb
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U volta -d volta_auth"]
+      interval: 5s
       timeout: 5s
-      retries: 8
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [volta]
 
   timescaledb:
     image: timescale/timescaledb:latest-pg16
-    ports:
-      - "5433:5432"
     environment:
       POSTGRES_USER: volta
-      POSTGRES_PASSWORD: volta
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:-volta}
       POSTGRES_DB: volta_ts
+    ports:
+      - "127.0.0.1:${TIMESCALE_PORT:-5433}:5432"
     volumes:
       - timescale_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U volta -d volta_ts"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 8
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [volta]
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 3s
-      retries: 8
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [volta]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: volta
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-volta}
+      RABBITMQ_DEFAULT_VHOST: volta
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      # The Erlang CLI is slow to boot on a busy host; keep the timeout generous.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 30s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [volta]
+
+  # ---------------------------------------------------------------- app services
+  migrate:
+    # One-shot: apply Alembic migrations, then exit 0. Everything else waits for it.
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - knowledge_data:/srv/volta/backend/var/knowledge
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  ingest-worker:
+    # RabbitMQ -> TimescaleDB + Redis. Scale with: docker compose up -d --scale ingest-worker=3
+    <<: *backend
+    command: ["python", "-m", "app.workers.ingest"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  device-worker:
+    # Audit consumer for virtual device commands (confirm-before-act flow).
+    <<: *backend
+    command: ["python", "-m", "app.workers.device_commands"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  simulator:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    image: volta-simulator:local
+    environment:
+      RABBITMQ_URL: amqp://volta:${RABBITMQ_PASSWORD:-volta}@rabbitmq:5672/volta
+      BACKEND_URL: http://api:8000
+      INGEST_TOKEN: ${INGEST_TOKEN:-dev-ingest-token}
+      WEATHER_MODE: ${SIMULATOR_WEATHER_MODE:-live}
+      # Homes come from completed onboarding; new ones are picked up while running.
+      FROM_ONBOARDING: "false"
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8765}:8765"
+    volumes:
+      - simulator_data:/srv/volta/simulator/data
+    depends_on:
+      api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [volta]
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+networks:
+  volta:
+    name: volta
 
 volumes:
-  rabbitmq_data:
+  postgres_data:
   timescale_data:
   redis_data:
+  rabbitmq_data:
+  knowledge_data:
+  simulator_data:

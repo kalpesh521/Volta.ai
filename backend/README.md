@@ -256,8 +256,9 @@ Postgres in production and SQLite in tests. Google OAuth tests use a fake
 
 ### AI assistant
 
-Set one provider key in `.env` (cheapest: `AI_LLM_PROVIDER=google_genai`,
-`AI_LLM_MODEL=gemini-3.5-flash-lite`, `GOOGLE_API_KEY=...`). Without a key the
+Set one provider key in `.env`. OpenRouter: `AI_LLM_PROVIDER=openrouter`,
+`AI_LLM_MODEL=openai/gpt-4o-mini` (any OpenRouter model id), `OPENROUTER_API_KEY=...`.
+Google also works (`google_genai`, `gemini-3.5-flash-lite`, `GOOGLE_API_KEY=...`). Without a key the
 assistant still answers from deterministic analytics. Design:
 [docs/ai_architecture.md](../docs/ai_architecture.md) · setup, evals and cost:
 [docs/ai_implementation_report.md](../docs/ai_implementation_report.md).

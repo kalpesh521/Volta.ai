@@ -43,6 +43,7 @@ def test_unknown_provider_and_disabled_ai():
         ("google_genai", "gemini-2.5-flash-lite", "GOOGLE_API_KEY", "ChatGoogleGenerativeAI"),
         ("anthropic", "claude-haiku-4-5", "ANTHROPIC_API_KEY", "ChatAnthropic"),
         ("openai", "gpt-5-mini", "OPENAI_API_KEY", "ChatOpenAI"),
+        ("openrouter", "openai/gpt-4o-mini", "OPENROUTER_API_KEY", "ChatOpenAI"),
     ],
 )
 def test_builds_each_provider_with_uniform_knobs(provider, model, key_field, cls_name):
@@ -51,6 +52,16 @@ def test_builds_each_provider_with_uniform_knobs(provider, model, key_field, cls
     chat = factory.primary(LLMRole.ANSWER)
     assert type(chat).__name__ == cls_name
     assert factory.primary(LLMRole.ANSWER) is chat
+
+
+def test_openrouter_uses_its_endpoint_by_default():
+    settings = _settings(
+        AI_LLM_PROVIDER="openrouter",
+        AI_LLM_MODEL="openai/gpt-4o-mini",
+        OPENROUTER_API_KEY=SecretStr("k"),
+    )
+    chat = ChatModelFactory(settings).primary(LLMRole.ANSWER)
+    assert str(chat.openai_api_base) == "https://openrouter.ai/api/v1"
 
 
 def test_router_role_can_use_a_cheaper_model():

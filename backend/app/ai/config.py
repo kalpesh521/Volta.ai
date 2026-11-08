@@ -55,6 +55,7 @@ class AISettings(BaseSettings):
     OPENAI_API_KEY: SecretStr | None = None
     GOOGLE_API_KEY: SecretStr | None = None
     GROQ_API_KEY: SecretStr | None = None
+    OPENROUTER_API_KEY: SecretStr | None = None
     # Ollama / self-hosted OpenAI-compatible gateways.
     AI_LLM_BASE_URL: str = ""
 

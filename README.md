@@ -13,7 +13,29 @@ volta.ai/
 
 Each package has its own README, dependencies, and virtualenv. They do not share a runtime.
 
-## Telemetry infra (local)
+## Run everything with Docker (one command)
+
+```bash
+cp backend/.env.example backend/.env   # once; set JWT_SECRET_KEY and OPENROUTER_API_KEY
+docker compose up -d --build --wait    # build, start in dependency order, wait until healthy
+docker compose ps
+docker compose down                    # stop, keep data   (down -v wipes all data)
+```
+
+| Service | What | Host URL (127.0.0.1 only) |
+|---|---|---|
+| `postgres` | auth / onboarding / knowledge DB (pgvector) | `:5434` |
+| `timescaledb`, `redis`, `rabbitmq` | telemetry history, live snapshot, queue | `:5433`, `:6379`, `:5672` / UI `:15672` |
+| `migrate` | one-shot `alembic upgrade head` | n/a |
+| `api` | FastAPI | http://127.0.0.1:8000/docs, `/ui/energy` |
+| `ingest-worker`, `device-worker` | RabbitMQ consumers | n/a |
+| `simulator` | telemetry generator + dashboard | http://127.0.0.1:8765 |
+
+Hostnames inside the stack override anything in `backend/.env`, so that file only needs secrets and AI keys.
+Ports, passwords and `APP_ENV` can be overridden through a root `.env` (see `.env.example`).
+If a port is taken, set e.g. `API_PORT=8010`. Logs: `docker compose logs -f api`.
+
+## Telemetry infra (local, without Docker for the apps)
 
 RabbitMQ, TimescaleDB, and Redis run in Docker. Neon stays the auth database.
 

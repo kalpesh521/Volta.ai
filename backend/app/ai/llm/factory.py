@@ -71,11 +71,13 @@ class ChatModelFactory:
             if not value:
                 raise LLMNotConfiguredError(f"{spec.api_key_setting} is not set.")
             kwargs["api_key"] = value
-        base_url = self._settings.AI_LLM_BASE_URL.strip()
+        base_url = self._settings.AI_LLM_BASE_URL.strip() or spec.default_base_url
         if base_url and spec.supports_base_url:
             kwargs["base_url"] = base_url
 
-        model = init_chat_model(target.model, model_provider=spec.id, **kwargs)
+        model = init_chat_model(
+            target.model, model_provider=spec.langchain_provider or spec.id, **kwargs
+        )
         self._cache[key] = model
         logger.info("LLM ready provider=%s model=%s", spec.id, target.model)
         return model
