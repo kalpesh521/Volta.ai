@@ -250,6 +250,9 @@ class SimulatorConfig(BaseSettings):
     rabbitmq_exchange: str = "telemetry"
     rabbitmq_routing_key: str = "telemetry.ingest"
     rabbitmq_publish_timeout_seconds: float = 3.0
+    device_command_exchange: str = "device.commands"
+    device_command_queue: str = "simulator.device.commands"
+    device_command_routing_key: str = "device.command"
 
     open_meteo_base_url: str = "https://api.open-meteo.com/v1/forecast"
     open_meteo_forecast_days: int = 7

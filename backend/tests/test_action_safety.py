@@ -33,6 +33,15 @@ def _facts(**overrides) -> ActionFacts:
     return ActionFacts(**base)
 
 
+def test_outage_stale_data_and_a_duplicate_command_are_rejected():
+    outage = evaluate_action(_facts(grid_outage=True))
+    assert "grid_outage" in outage.reasons
+    stale = evaluate_action(_facts(telemetry_age_seconds=900))
+    assert "stale_telemetry" in stale.reasons
+    duplicate = evaluate_action(_facts(duplicate=True))
+    assert "duplicate_action" in duplicate.reasons
+
+
 def test_low_battery_rejects_before_confirmation():
     verdict = evaluate_action(_facts(soc_percent=25, reserve_percent=30, question="Battery is 25%; turn on AC."))
     assert verdict.decision == "reject"
@@ -56,12 +65,17 @@ def test_jailbreak_cannot_switch_off_the_refrigerator():
     assert "critical_device" in verdict.reasons
 
 
-def test_worker_does_not_claim_the_device_changed():
+def test_worker_applies_a_virtual_device_and_refuses_an_unknown_one():
     result = handle_device_command(
-        {"command_id": "abc", "household_id": "home_1", "device": "air_conditioner", "command": "on"}
+        {"command_id": "abc", "household_id": "home_1", "device": "water_heater", "command": "on"}
     )
-    assert result["applied"] is False
-    assert result["status"] == "no_device_adapter"
+    assert result["applied"] is True
+    assert result["status"] == "virtual_applied"
+    unknown = handle_device_command(
+        {"command_id": "abc", "household_id": "home_1", "device": "toaster", "command": "on"}
+    )
+    assert unknown["applied"] is False
+    assert unknown["status"] == "no_device_adapter"
 
 
 async def test_ask_still_refuses_device_control(client):

@@ -104,6 +104,7 @@ class DeviceEngine:
         self.catalog: list[dict[str, Any]] = config.device_catalog()
         self._state: dict[str, dict[str, Any]] = {}
         self._plans: dict[tuple[str, date, str], Any] = {}
+        self._commands: dict[str, dict[str, Any]] = {}
 
     # ---- public -----------------------------------------------------------------
 
@@ -124,6 +125,9 @@ class DeviceEngine:
             device_id = spec["device_id"]
             rated = float(spec["rated_power_kw"])
             power, mode = self._power(spec, local, weather, scenario, occupancy)
+            forced = self._forced(spec, local)
+            if forced is not None:
+                power, mode = forced
             power = max(0.0, power)
             state = self._state_for(device_id, local.date())
             interval_kwh = power * self.config.interval_hours
@@ -183,15 +187,71 @@ class DeviceEngine:
             )
         return updated
 
+    def apply_command(
+        self,
+        device_type: str,
+        command: str,
+        *,
+        until: datetime | None = None,
+        power_kw: float | None = None,
+    ) -> bool:
+        """Hold a virtual device on or off until `until`. Unknown types are ignored."""
+        kind = _TYPE_ALIASES.get(device_type, device_type)
+        action = "on" if command == "schedule" else command
+        if action not in {"on", "off"}:
+            return False
+        if not any(_TYPE_ALIASES.get(spec["device_type"], spec["device_type"]) == kind for spec in self.catalog):
+            return False
+        if action == "off":
+            self._commands.pop(kind, None)
+            self._commands[kind] = {"command": "off", "until": until, "power_kw": None}
+            return True
+        self._commands[kind] = {"command": "on", "until": until, "power_kw": power_kw}
+        return True
+
+    def _forced(self, spec: dict[str, Any], local: datetime) -> tuple[float, str] | None:
+        kind = _TYPE_ALIASES.get(spec["device_type"], spec["device_type"])
+        item = self._commands.get(kind)
+        if item is None:
+            return None
+        until = item.get("until")
+        if until is not None and local >= until:
+            self._commands.pop(kind, None)
+            return None
+        if item["command"] == "off":
+            return 0.0, "command_off"
+        rated = float(spec["rated_power_kw"])
+        requested = item.get("power_kw")
+        power = rated if requested is None else min(float(requested), rated)
+        return max(0.0, power), "command_on"
+
     def state(self) -> dict[str, Any]:
+        commands = {
+            key: {
+                "command": value["command"],
+                "until": value["until"].isoformat() if value.get("until") else None,
+                "power_kw": value.get("power_kw"),
+            }
+            for key, value in self._commands.items()
+        }
         return {
             key: {**value, "day": value["day"].isoformat() if value.get("day") else None}
             for key, value in self._state.items()
             if key != "__ac__"
-        } | {"__ac__": self._state.get("__ac__", {})}
+        } | {"__ac__": self._state.get("__ac__", {}), "__commands__": commands}
 
     def restore(self, data: dict[str, Any]) -> None:
         for key, value in (data or {}).items():
+            if key == "__commands__":
+                self._commands = {}
+                for name, item in (value or {}).items():
+                    until = item.get("until")
+                    self._commands[name] = {
+                        "command": item.get("command"),
+                        "until": datetime.fromisoformat(until) if until else None,
+                        "power_kw": item.get("power_kw"),
+                    }
+                continue
             if key == "__ac__":
                 self._state[key] = dict(value)
                 continue

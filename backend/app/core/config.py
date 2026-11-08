@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_KEY_PREFIX: str = "volta:live:"
     REDIS_LIVE_TTL_SECONDS: int = 120
+    NOTIFICATION_KEY_PREFIX: str = "volta:notify:"
+    NOTIFICATION_CACHE_TTL_SECONDS: int = 30
 
     # RabbitMQ: simulator publishes, backend worker consumes.
     RABBITMQ_URL: str = "amqp://volta:volta@localhost:5672/volta"
@@ -126,7 +128,16 @@ class Settings(BaseSettings):
     DEVICE_KILL_SWITCH: bool = True
     DEVICE_COMMAND_EXCHANGE: str = "device.commands"
     DEVICE_COMMAND_QUEUE: str = "device.commands"
+    DEVICE_COMMAND_SIMULATOR_QUEUE: str = "simulator.device.commands"
     DEVICE_COMMAND_ROUTING_KEY: str = "device.command"
+
+    # Critical alerts only. Leave EMAIL_PROVIDER empty to keep email off.
+    # Celery broker defaults to RABBITMQ_URL. Queue: suryaa.notifications.
+    CELERY_BROKER_URL: str = ""
+    EMAIL_PROVIDER: str = ""
+    RESEND_API_KEY: str = ""
+    SENDGRID_API_KEY: str = ""
+    EMAIL_FROM: str = "Suryaa <alerts@localhost>"
 
 
 @lru_cache

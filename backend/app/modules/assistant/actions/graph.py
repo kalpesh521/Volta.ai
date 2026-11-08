@@ -10,7 +10,8 @@ reach the interrupt.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -41,6 +42,7 @@ class ActionState(TypedDict, total=False):
     user_id: str
     device: str | None
     command: str | None
+    duration_minutes: int | None
     jailbreak: bool
     owner_ok: bool
     battery_present: bool
@@ -51,6 +53,9 @@ class ActionState(TypedDict, total=False):
     critical: bool
     controllable: bool
     device_known: bool
+    grid_outage: bool
+    telemetry_age_seconds: float | None
+    duplicate: bool
     decision: str
     reasons: list[str]
     checks: dict[str, str]
@@ -64,6 +69,7 @@ class ActionRuntime:
     system: SolarSystem
     publisher: CommandPublisher
     settings: Settings
+    active_commands: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
 
 def build_action_graph(checkpointer: MemorySaver) -> CompiledStateGraph:
@@ -84,7 +90,12 @@ def build_action_graph(checkpointer: MemorySaver) -> CompiledStateGraph:
 
 def parse_node(state: dict) -> dict[str, Any]:
     parsed = parse_control_request(state["question"])
-    return {"device": parsed.device, "command": parsed.command, "jailbreak": parsed.jailbreak}
+    return {
+        "device": parsed.device,
+        "command": parsed.command,
+        "jailbreak": parsed.jailbreak,
+        "duration_minutes": parsed.duration_minutes,
+    }
 
 
 async def load_node(state: dict, runtime: Runtime[ActionRuntime]) -> dict[str, Any]:
@@ -111,6 +122,9 @@ async def load_node(state: dict, runtime: Runtime[ActionRuntime]) -> dict[str, A
         "critical": critical,
         "controllable": controllable,
         "device_known": device is not None,
+        "grid_outage": _grid_outage(live),
+        "telemetry_age_seconds": _age_seconds(live),
+        "duplicate": (state.get("device"), state.get("command")) in ctx.active_commands,
     }
 
 
@@ -131,6 +145,10 @@ def decide_node(state: dict, runtime: Runtime[ActionRuntime]) -> dict[str, Any]:
         control_enabled=runtime.context.settings.DEVICE_CONTROL_ENABLED,
         kill_switch=runtime.context.settings.DEVICE_KILL_SWITCH,
         device_known=bool(state.get("device_known")),
+        grid_outage=bool(state.get("grid_outage")),
+        telemetry_age_seconds=state.get("telemetry_age_seconds", 0.0),
+        freshness_limit_seconds=600.0,
+        duplicate=bool(state.get("duplicate")),
     )
     confirmed = state.get("confirmed")
     verdict = evaluate_action(facts, confirmed=confirmed if "confirmed" in state else None)
@@ -162,6 +180,8 @@ async def publish_node(state: dict, runtime: Runtime[ActionRuntime]) -> dict[str
         user_id=state["user_id"],
         device=state["device"],
         command=state["command"],
+        duration_minutes=state.get("duration_minutes"),
+        power_kw=state.get("rated_power_kw"),
     )
     try:
         command_id = await runtime.context.publisher.publish(command)
@@ -177,6 +197,22 @@ def route_after_decide(state: dict) -> str:
     if decision == "ready":
         return PUBLISH
     return END
+
+
+def _grid_outage(live) -> bool:
+    if live is None:
+        return False
+    status = str(getattr(live.grid, "status", "") or "").lower()
+    return status in {"outage", "off", "disconnected", "islanded"}
+
+
+def _age_seconds(live) -> float | None:
+    if live is None or getattr(live, "timestamp", None) is None:
+        return None
+    stamp = live.timestamp
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
 
 
 def _match_device(devices: list, device_type: str | None):

@@ -1,6 +1,10 @@
 """
   POST /assistant/actions/propose
+  GET  /assistant/actions
+  GET  /assistant/actions/{proposal_id}
   POST /assistant/actions/{proposal_id}/confirm
+  POST /assistant/actions/{proposal_id}/reject
+  POST /assistant/actions/{proposal_id}/cancel
 
 Do not add `from __future__ import annotations` in this file.
 """
@@ -31,6 +35,25 @@ async def propose_action(
     return await service.propose(system, current_user.id, payload.question)
 
 
+@router.get("", response_model=list[ActionResponse], summary="List recent device actions")
+async def list_actions(
+    current_user: User = Depends(get_current_user),
+    system: SolarSystem = Depends(require_my_completed_system),
+    service: ActionService = Depends(get_action_service),
+) -> list[ActionResponse]:
+    return await service.list_for_home(system, current_user.id)
+
+
+@router.get("/{proposal_id}", response_model=ActionResponse, summary="Get a device action")
+async def get_action(
+    proposal_id: str,
+    current_user: User = Depends(get_current_user),
+    system: SolarSystem = Depends(require_my_completed_system),
+    service: ActionService = Depends(get_action_service),
+) -> ActionResponse:
+    return await service.get(system, current_user.id, proposal_id)
+
+
 @router.post("/{proposal_id}/confirm", response_model=ActionResponse)
 @limiter.limit(ai_settings.RATE_LIMIT_ASSISTANT)
 async def confirm_action(
@@ -42,3 +65,27 @@ async def confirm_action(
     service: ActionService = Depends(get_action_service),
 ) -> ActionResponse:
     return await service.confirm(system, current_user.id, proposal_id, payload.confirmed)
+
+
+@router.post("/{proposal_id}/reject", response_model=ActionResponse, summary="Reject a proposed device action")
+@limiter.limit(ai_settings.RATE_LIMIT_ASSISTANT)
+async def reject_action(
+    request: Request,
+    proposal_id: str,
+    current_user: User = Depends(get_current_user),
+    system: SolarSystem = Depends(require_my_completed_system),
+    service: ActionService = Depends(get_action_service),
+) -> ActionResponse:
+    return await service.reject(system, current_user.id, proposal_id)
+
+
+@router.post("/{proposal_id}/cancel", response_model=ActionResponse, summary="Cancel a device action")
+@limiter.limit(ai_settings.RATE_LIMIT_ASSISTANT)
+async def cancel_action(
+    request: Request,
+    proposal_id: str,
+    current_user: User = Depends(get_current_user),
+    system: SolarSystem = Depends(require_my_completed_system),
+    service: ActionService = Depends(get_action_service),
+) -> ActionResponse:
+    return await service.cancel(system, current_user.id, proposal_id)

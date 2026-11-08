@@ -55,12 +55,29 @@
     th { color: var(--dim); font-weight: 500; }
     pre { background: #081614; border-radius: 12px; padding: 12px; overflow: auto; font-size: 12px; max-height: 420px; }
     .err { color: var(--coral); font-size: 13px; min-height: 1.2em; }
+    .toasts {
+      position: fixed; right: 16px; bottom: 16px; z-index: 30;
+      display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100% - 32px));
+    }
+    .toast {
+      background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+      border-left: 4px solid var(--cyan); border-radius: 14px; padding: 12px 36px 12px 14px; position: relative;
+    }
+    .toast.warning { border-left-color: var(--sun); }
+    .toast.critical { border-left-color: var(--coral); }
+    .toast strong { display: block; font-size: 14px; margin-bottom: 4px; }
+    .toast p { color: var(--dim); font-size: 13px; line-height: 1.4; }
+    .toast button {
+      position: absolute; top: 8px; right: 8px; border: none; background: transparent;
+      color: var(--dim); cursor: pointer; font-size: 16px;
+    }
     .login { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <div class="wrap">
     <header>
       <div>
@@ -126,7 +143,14 @@
     const API = sameOrigin ? "" : "http://127.0.0.1:8000";
     const WS_BASE = (sameOrigin ? location.origin : "http://127.0.0.1:8000").replace(/^http/, "ws");
 
-    const state = { token: params.get("token") || sessionStorage.getItem(TOKEN_KEY) || "", household: "", socket: null };
+    const state = {
+      token: params.get("token") || sessionStorage.getItem(TOKEN_KEY) || "",
+      household: "",
+      socket: null,
+      noteSocket: null,
+    };
+    const seenNotes = new Set();
+    let scannedHome = "";
 
     const $ = (id) => document.getElementById(id);
     const num = (v, d = 2) => Number(v || 0).toFixed(d);
@@ -192,6 +216,51 @@
       $("rawPre").textContent = pretty(row);
     }
 
+    function showToast(note) {
+      if (!note || !note.id || seenNotes.has(note.id)) return;
+      seenNotes.add(note.id);
+      const el = document.createElement("article");
+      el.className = "toast " + (note.priority || "info");
+      const title = document.createElement("strong");
+      title.textContent = note.title || "Alert";
+      const body = document.createElement("p");
+      body.textContent = note.body || "";
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "×";
+      close.addEventListener("click", async () => {
+        el.remove();
+        try {
+          await api("/assistant/notifications/" + note.id + "/read", { method: "POST" });
+        } catch (err) { /* leave unread */ }
+      });
+      el.append(title, body, close);
+      $("toasts").prepend(el);
+      setTimeout(() => el.remove(), note.priority === "critical" ? 12000 : 7000);
+    }
+
+    function connectNotes() {
+      if (state.noteSocket) { try { state.noteSocket.close(); } catch (e) { /* ignore */ } }
+      if (!state.token) return;
+      const url = new URL(WS_BASE + "/ws/notifications");
+      url.searchParams.set("token", state.token);
+      if (state.household && state.household !== "home_001") url.searchParams.set("household_id", state.household);
+      const homeKey = state.household || "primary";
+      const ws = new WebSocket(url.toString());
+      state.noteSocket = ws;
+      ws.onmessage = (ev) => {
+        let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === "hello") {
+          (msg.notifications || []).forEach(showToast);
+          if (scannedHome !== homeKey) {
+            scannedHome = homeKey;
+            api("/assistant/notifications/scan" + hidQuery(), { method: "POST" }).catch(() => {});
+          }
+        }
+        if (msg.type === "notification" && msg.notification) showToast(msg.notification);
+      };
+    }
+
     function connectWs() {
       if (state.socket) { try { state.socket.close(); } catch (e) { /* ignore */ } }
       if (!state.token) return;
@@ -247,7 +316,7 @@
       if (!state.token) return;
       $("authErr").textContent = "";
       try {
-        if (name === "live") { await refreshLive(); connectWs(); }
+        if (name === "live") { await refreshLive(); connectWs(); connectNotes(); }
         if (name === "history") await loadHistory();
         if (name === "daily") $("dailyPre").textContent = pretty(await api("/energy/me/daily" + hidQuery()));
         if (name === "hourly") $("hourlyPre").textContent = pretty(await api("/energy/me/hourly" + hidQuery()));
@@ -300,6 +369,7 @@
       state.token = "";
       sessionStorage.removeItem(TOKEN_KEY);
       if (state.socket) try { state.socket.close(); } catch (e) { /* ignore */ }
+      if (state.noteSocket) try { state.noteSocket.close(); } catch (e) { /* ignore */ }
       setLive(false, "Logged out");
     });
 

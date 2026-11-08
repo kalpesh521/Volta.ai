@@ -27,6 +27,8 @@ class DeviceCommand:
     user_id: str
     device: str
     command: str
+    duration_minutes: int | None = None
+    power_kw: float | None = None
 
 
 class CommandPublisher(Protocol):
@@ -61,14 +63,17 @@ class RabbitDevicePublisher:
         try:
             channel = await connection.channel(publisher_confirms=True)
             exchange = await channel.declare_exchange(self._exchange_name, ExchangeType.TOPIC, durable=True)
-            queue = await channel.declare_queue(self._queue_name, durable=True)
-            await queue.bind(exchange, routing_key=self._routing_key)
+            for queue_name in {self._queue_name, settings.DEVICE_COMMAND_SIMULATOR_QUEUE}:
+                queue = await channel.declare_queue(queue_name, durable=True)
+                await queue.bind(exchange, routing_key=self._routing_key)
             body = {
                 "command_id": command.command_id,
                 "household_id": command.household_id,
                 "user_id": command.user_id,
                 "device": command.device,
                 "command": command.command,
+                "duration_minutes": command.duration_minutes,
+                "power_kw": command.power_kw,
                 "issued_at": datetime.now(timezone.utc).isoformat(),
                 "applied": False,
             }

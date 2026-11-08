@@ -18,9 +18,11 @@ _OFF = re.compile(
     re.I,
 )
 _ON = re.compile(
-    r"\b(?:turn|switch|power)\s+(?:it\s+|the\s+\w+(?:\s+\w+){0,3}\s+)?on\b|\b(?:start|enable)\b",
+    r"\b(?:turn|switch|power)\s+(?:it\s+|the\s+\w+(?:\s+\w+){0,3}\s+)?on\b|\b(?:start|enable|run)\b",
     re.I,
 )
+_SCHEDULE = re.compile(r"\bschedule\b", re.I)
+_DURATION = re.compile(r"\b(\d{1,3})\s*(?:minutes|minute|mins|min)\b", re.I)
 
 _NAMES = {
     ApplianceType.WATER_HEATER: "water_heater",
@@ -37,6 +39,7 @@ class ParsedAction:
     device: str | None
     command: str | None
     jailbreak: bool
+    duration_minutes: int | None = None
 
 
 def parse_control_request(question: str) -> ParsedAction:
@@ -45,10 +48,23 @@ def parse_control_request(question: str) -> ParsedAction:
         device=_NAMES.get(appliance) if appliance else None,
         command=_command(question),
         jailbreak=bool(_JAILBREAK.search(question)),
+        duration_minutes=_duration(question),
     )
 
 
+def _duration(question: str) -> int | None:
+    match = _DURATION.search(question)
+    if match is None:
+        return None
+    minutes = int(match.group(1))
+    if minutes <= 0 or minutes > 240:
+        return None
+    return minutes
+
+
 def _command(question: str) -> str | None:
+    if _SCHEDULE.search(question):
+        return "schedule"
     off = _OFF.search(question)
     on = _ON.search(question)
     if off and on:

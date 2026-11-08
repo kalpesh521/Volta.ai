@@ -178,6 +178,23 @@
       .kpis, .devices, .weather, .flow { grid-template-columns: repeat(2, 1fr); }
       .grid-2, .grid-3 { grid-template-columns: 1fr; }
     }
+    .toasts {
+      position: fixed; right: 16px; bottom: 16px; z-index: 30;
+      display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100% - 32px));
+    }
+    .toast {
+      background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+      border-left: 4px solid var(--cyan); border-radius: 14px; box-shadow: var(--shadow);
+      padding: 12px 36px 12px 14px; position: relative;
+    }
+    .toast.warning { border-left-color: var(--sun); }
+    .toast.critical { border-left-color: var(--coral); }
+    .toast strong { display: block; font-size: 14px; margin-bottom: 4px; }
+    .toast p { color: var(--text-dim); font-size: 13px; line-height: 1.4; }
+    .toast button {
+      position: absolute; top: 8px; right: 8px; border: none; background: transparent;
+      color: var(--text-dim); cursor: pointer; font-size: 16px; line-height: 1;
+    }
     @media (max-width: 640px) {
       .topbar { flex-direction: column; align-items: flex-start; }
       .kpis, .devices, .weather, .flow { grid-template-columns: 1fr; }
@@ -186,6 +203,7 @@
   </style>
 </head>
 <body>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <div class="wrap">
     <header class="topbar">
       <div class="brand">
@@ -207,6 +225,7 @@
         <select id="homeSelect" class="chip" hidden title="Switch home"></select>
         <span class="chip" id="locationChip">location —</span>
         <span class="chip" id="clockChip">--:--</span>
+        <span class="chip" id="alertChip" hidden>0 alerts</span>
         <span class="chip" id="qualityChip">quality —</span>
         <span class="chip" id="balanceChip">balance —</span>
         <div class="loc-wrap">
@@ -609,6 +628,116 @@
       };
     }
 
+    let noteSocket = null;
+    let noteSession = 0;
+    let scannedHome = "";
+    let alertCount = 0;
+    const seenNotes = new Set();
+
+    function showToast(note) {
+      if (!note || !note.id || seenNotes.has(note.id)) return;
+      seenNotes.add(note.id);
+      const stack = $("toasts");
+      if (!stack) return;
+      const el = document.createElement("article");
+      el.className = "toast " + (note.priority || "info");
+      const title = document.createElement("strong");
+      title.textContent = note.title || "Alert";
+      const body = document.createElement("p");
+      body.textContent = note.body || "";
+      const close = document.createElement("button");
+      close.type = "button";
+      close.setAttribute("aria-label", "Dismiss");
+      close.textContent = "×";
+      close.addEventListener("click", () => {
+        el.remove();
+        setAlertCount(alertCount - 1);
+        markNoteRead(note);
+      });
+      el.append(title, body, close);
+      stack.prepend(el);
+      window.setTimeout(() => el.remove(), note.priority === "critical" ? 12000 : 7000);
+    }
+
+    function setAlertCount(count) {
+      const chip = $("alertChip");
+      alertCount = Math.max(0, Number(count) || 0);
+      if (!chip) return;
+      chip.hidden = alertCount < 1;
+      chip.textContent = alertCount === 1 ? "1 alert" : alertCount + " alerts";
+    }
+
+    async function markNoteRead(note) {
+      if (!backendOpts || !note || !note.id) return;
+      const base = String(backendOpts.api || "http://127.0.0.1:8000").replace(/\/$/, "");
+      try {
+        await fetch(base + "/assistant/notifications/" + note.id + "/read", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + (backendOpts.token || "") },
+        });
+      } catch {
+        /* the row stays unread and can appear again next visit */
+      }
+    }
+
+    async function scanAlerts(opts) {
+      const base = String(opts.api || "http://127.0.0.1:8000").replace(/\/$/, "");
+      const household = (opts.household || "").trim();
+      const query = household && household !== "home_001"
+        ? "?household_id=" + encodeURIComponent(household)
+        : "";
+      try {
+        await fetch(base + "/assistant/notifications/scan" + query, {
+          method: "POST",
+          headers: { Authorization: "Bearer " + (opts.token || "") },
+        });
+      } catch {
+        /* hello already showed anything saved earlier */
+      }
+    }
+
+    function connectNotifications(opts) {
+      const session = ++noteSession;
+      if (noteSocket) {
+        try { noteSocket.close(); } catch { /* ignore */ }
+        noteSocket = null;
+      }
+      const wsUrl = new URL(opts.ws || "ws://127.0.0.1:8000/ws/energy");
+      wsUrl.pathname = "/ws/notifications";
+      wsUrl.search = "";
+      wsUrl.searchParams.set("token", opts.token || "");
+      const household = (opts.household || "").trim();
+      if (household && household !== "home_001") {
+        wsUrl.searchParams.set("household_id", household);
+      }
+      const homeKey = household || "primary";
+      const socket = new WebSocket(wsUrl.toString());
+      noteSocket = socket;
+      socket.onmessage = (event) => {
+        if (session !== noteSession || stopped) return;
+        let payload;
+        try { payload = JSON.parse(event.data); } catch { return; }
+        if (payload.type === "hello") {
+          setAlertCount(payload.unread_count);
+          (payload.notifications || []).forEach(showToast);
+          if (scannedHome !== homeKey) {
+            scannedHome = homeKey;
+            scanAlerts(opts);
+          }
+          return;
+        }
+        if (payload.type === "notification" && payload.notification) {
+          const incoming = payload.notification;
+          if (!seenNotes.has(incoming.id)) setAlertCount(alertCount + 1);
+          showToast(incoming);
+        }
+      };
+      socket.onclose = () => {
+        if (session !== noteSession || stopped) return;
+        window.setTimeout(() => connectNotifications(opts), 2000);
+      };
+    }
+
     async function loadHomesAndConnect(opts) {
       const candidates = [opts.api, "http://127.0.0.1:8000", "http://127.0.0.1:8001"];
       const seen = new Set();
@@ -647,7 +776,9 @@
       const chosen = rows.find((home) => home.household_id === primary);
       if (chosen && chosen.location) setLocationChip(chosen.location);
       resetTelemetry();
-      connectBackendWs({ ...opts, household: "" });
+      const liveOpts = { ...opts, household: "" };
+      connectBackendWs(liveOpts);
+      connectNotifications(liveOpts);
     }
 
     async function pollLatest() {
@@ -674,6 +805,10 @@
       if (liveSource) {
         if (typeof liveSource.close === "function") liveSource.close();
         liveSource = null;
+      }
+      if (noteSocket) {
+        try { noteSocket.close(); } catch { /* ignore */ }
+        noteSocket = null;
       }
       if (pollTimer) window.clearTimeout(pollTimer);
       setLive(false, "Stopping");
@@ -801,7 +936,9 @@
     $("homeSelect").addEventListener("change", () => {
       if (!backendOpts) return;
       resetTelemetry();
-      connectBackendWs({ ...backendOpts, household: $("homeSelect").value });
+      const liveOpts = { ...backendOpts, household: $("homeSelect").value };
+      connectBackendWs(liveOpts);
+      connectNotifications(liveOpts);
     });
     document.addEventListener("click", (event) => {
       if (!event.target.closest(".loc-wrap")) $("locResults").classList.remove("open");

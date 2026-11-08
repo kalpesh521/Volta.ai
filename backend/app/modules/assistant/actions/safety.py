@@ -27,6 +27,10 @@ class ActionFacts:
     control_enabled: bool
     kill_switch: bool
     device_known: bool
+    grid_outage: bool = False
+    telemetry_age_seconds: float | None = 0.0
+    freshness_limit_seconds: float = 600.0
+    duplicate: bool = False
 
 
 @dataclass(frozen=True)
@@ -39,7 +43,7 @@ class ActionVerdict:
 def evaluate_action(facts: ActionFacts, *, confirmed: bool | None = None) -> ActionVerdict:
     """`confirmed` is None before the interrupt, True/False after the user answers."""
     if confirmed is False:
-        return ActionVerdict("cancelled", ("user_declined",), _checks(facts, blocked=()))
+        return ActionVerdict("cancelled", ("user_declined",), _checks(facts, blocked=set()))
 
     reasons: list[str] = []
     if facts.jailbreak:
@@ -52,15 +56,24 @@ def evaluate_action(facts: ActionFacts, *, confirmed: bool | None = None) -> Act
         reasons.append("unknown_device")
     if facts.critical and facts.command == "off":
         reasons.append("critical_device")
-    if facts.command == "on" and facts.device and not facts.controllable:
+    starting = facts.command in {"on", "schedule"}
+    if starting and facts.device and not facts.controllable:
         reasons.append("not_controllable")
-    if facts.command == "on" and facts.battery_present:
+    if starting and facts.device:
+        age = facts.telemetry_age_seconds
+        if age is None or age > facts.freshness_limit_seconds:
+            reasons.append("stale_telemetry")
+        if facts.grid_outage:
+            reasons.append("grid_outage")
+        if facts.duplicate:
+            reasons.append("duplicate_action")
+    if starting and facts.battery_present:
         if facts.soc_percent is None:
             reasons.append("battery_unknown")
         elif facts.soc_percent <= facts.reserve_percent:
             reasons.append("battery_below_reserve")
     if (
-        facts.command == "on"
+        starting
         and facts.rated_power_kw is not None
         and facts.inverter_capacity_kw is not None
         and facts.rated_power_kw > facts.inverter_capacity_kw + 0.05
@@ -84,6 +97,9 @@ def explain(decision: str, reasons: tuple[str, ...] | list[str], device: str | N
         "unknown_device": "That device is not on this home.",
         "critical_device": "The refrigerator is critical and cannot be switched off.",
         "not_controllable": "That device is not controllable.",
+        "stale_telemetry": "Live energy data is missing or too old, so I will not start a load.",
+        "grid_outage": "The grid is out, so I will not start a new load.",
+        "duplicate_action": "That device already has the same command in progress.",
         "battery_unknown": "Live battery data is missing, so I will not start a load.",
         "battery_below_reserve": "Battery charge is at or below the reserve, so I will not start this load.",
         "exceeds_inverter_capacity": "That device draws more than the inverter can supply.",
@@ -103,6 +119,10 @@ def explain(decision: str, reasons: tuple[str, ...] | list[str], device: str | N
         )
     if decision == "cancelled":
         return labels["user_declined"]
+    if decision == "rejected" and "user_declined" in reasons:
+        return "You rejected the action. Nothing was sent."
+    if decision == "applied":
+        return f"The virtual {device or 'device'} is now {command or 'updated'}. The next telemetry tick includes it."
     if not reasons:
         return "The action was not sent."
     return " ".join(labels.get(reason, reason) for reason in reasons)
@@ -110,15 +130,22 @@ def explain(decision: str, reasons: tuple[str, ...] | list[str], device: str | N
 
 def _checks(facts: ActionFacts, blocked: set[str]) -> dict[str, str]:
     reserve = "not_applicable"
-    if facts.command == "on" and facts.battery_present:
+    starting = facts.command in {"on", "schedule"}
+    if starting and facts.battery_present:
         reserve = "fail" if {"battery_below_reserve", "battery_unknown"} & blocked else "pass"
     power = "not_applicable"
-    if facts.command == "on":
+    if starting:
         power = "fail" if "exceeds_inverter_capacity" in blocked else "pass"
     return {
         "prompt_injection": "fail" if "prompt_injection" in blocked else "pass",
         "rbac": "fail" if "rbac" in blocked else "pass",
         "critical_device": "fail" if "critical_device" in blocked else "pass",
+        "device_controllable": "fail" if "not_controllable" in blocked else "pass",
+        "telemetry_freshness": (
+            "fail" if "stale_telemetry" in blocked else "pass" if starting else "not_applicable"
+        ),
+        "grid_outage": "fail" if "grid_outage" in blocked else "pass" if starting else "not_applicable",
+        "duplicate_action": "fail" if "duplicate_action" in blocked else "pass" if starting else "not_applicable",
         "kill_switch": "blocked" if "kill_switch" in blocked else "off",
         "battery_reserve": reserve,
         "device_power": power,

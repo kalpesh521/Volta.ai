@@ -307,6 +307,40 @@ async def add_new_homes(
         location_state.active_generator = generator
 
 
+async def _apply_device_commands(listener, generators: list[TelemetryGenerator], now: datetime) -> None:
+    from simulator.clients.device_commands import command_deadline
+
+    try:
+        payloads = await listener.poll()
+    except Exception:
+        logger.exception("device command poll failed")
+        return
+    for payload in payloads:
+        household_id = payload.get("household_id")
+        device = payload.get("device")
+        command = payload.get("command")
+        if not household_id or not device or not command:
+            continue
+        until = command_deadline(payload, now)
+        power = payload.get("power_kw")
+        for generator in generators:
+            if generator.config.household_id != household_id:
+                continue
+            applied = generator.devices.apply_command(
+                device,
+                command,
+                until=until,
+                power_kw=float(power) if power is not None else None,
+            )
+            logger.info(
+                "device command household=%s device=%s command=%s applied=%s",
+                household_id,
+                device,
+                command,
+                applied,
+            )
+
+
 async def run(
     config: SimulatorConfig,
     start_time: datetime,
@@ -353,6 +387,7 @@ async def run(
     tz = ZoneInfo(configs[0].timezone)
     ingest_client = None
     rabbitmq_publisher = None
+    command_listener = None
     if config.ingest_url.strip():
         from simulator.clients.ingest import IngestClient
 
@@ -371,6 +406,18 @@ async def run(
             "Publishing ticks to RabbitMQ exchange=%s routing_key=%s",
             config.rabbitmq_exchange,
             config.rabbitmq_routing_key,
+        )
+        from simulator.clients.device_commands import DeviceCommandListener
+
+        command_listener = DeviceCommandListener(
+            config.rabbitmq_url,
+            config.device_command_exchange,
+            config.device_command_queue,
+            config.device_command_routing_key,
+        )
+        logger.info(
+            "Listening for device commands on queue=%s",
+            config.device_command_queue,
         )
     logger.info("Writing JSONL to %s", output_path)
     logger.info(
@@ -413,6 +460,8 @@ async def run(
                     sim_ts=sim_ts,
                 )
                 last_profile_refresh = sim_ts
+            if command_listener is not None:
+                await _apply_device_commands(command_listener, generators, sim_ts)
             for generator in generators:
                 record = await generator.step(sim_ts)
                 if ingest_client is not None:
@@ -458,6 +507,8 @@ async def run(
             await ingest_client.aclose()
         if rabbitmq_publisher is not None:
             await rabbitmq_publisher.aclose()
+        if command_listener is not None:
+            await command_listener.aclose()
         if location_state.stop_requested.is_set():
             logger.info("Simulator stopped after %s readings", count)
 

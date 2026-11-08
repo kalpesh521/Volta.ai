@@ -18,11 +18,13 @@ from app.core.cors import cors_origin_regex
 from app.core.exceptions import register_exception_handlers
 from app.core.rate_limit import limiter
 from app.modules.assistant.actions.router import router as action_router
+from app.modules.assistant.ops.router import router as home_ops_router
 from app.modules.assistant.router import router as assistant_router
 from app.modules.knowledge.router import router as knowledge_router
 from app.modules.auth.oauth_router import router as oauth_router
 from app.modules.auth.router import router as auth_router
 from app.modules.energy.router import router as energy_router
+from app.modules.assistant.notifications.ws import router as notification_ws_router
 from app.modules.energy.ws import router as energy_ws_router
 from app.modules.onboarding.router import router as onboarding_router
 from app.webui import router as webui_router
@@ -115,8 +117,10 @@ app.include_router(oauth_router)        # /auth/google/*
 app.include_router(onboarding_router)   # /onboarding/*
 app.include_router(energy_router)       # /energy/*
 app.include_router(energy_ws_router)    # /ws/energy
+app.include_router(notification_ws_router)  # /ws/notifications
 app.include_router(assistant_router)    # /assistant/*  read-only AI assistant
 app.include_router(action_router)       # /assistant/actions/*  confirm before any command
+app.include_router(home_ops_router)     # recommendations, alerts, automation rules
 app.include_router(knowledge_router)    # /knowledge/*  admin and user documents
 app.include_router(webui_router)        # /ui  temporary energy HTML (not production)
 
