@@ -30,6 +30,7 @@ Source `.txt` files stay in this folder as the raw revision notes. The `.md` fil
 | 3 | [Simulator](./simulator.md) | How **one tick** is calculated | Pydantic · Open-Meteo · stdlib SSE |
 | 4 | [Telemetry ingest](./telemetry_ingest.md) | What happens **after** the tick is JSON | RabbitMQ · Timescale · Redis · WS |
 | 5 | [AI architecture](./ai_architecture.md) · [report](./ai_implementation_report.md) | How Suryaa answers energy questions (read-only) | LangChain · LangGraph · any LLM provider |
+| 6 | [Multi-agent architecture](./multi-agent/README.md) | Target production design: supervisor + specialist agents, gates, evals, Go performance plane | LangGraph · Go · Postgres · Redis · OTel |
 
 Do not mix the last two. The simulator never sees Redis or Timescale. The ingest worker never computes PV physics.
 
