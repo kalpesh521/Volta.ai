@@ -1,21 +1,29 @@
 # 11 — Roadmap & Suggestions
 
+**Decision (2026-11-09): the whole system is built in Python (FastAPI + LangGraph).** Go is not part of this
+roadmap. [06-golang-performance-plane.md](./06-golang-performance-plane.md) is kept as a future option. Revisit
+it only if the measurements in §3 show a Python service cannot meet its target.
+
 ## 1. Phased plan from today's code
 
 Each phase ends with the eval gate green. v1 endpoints (`/assistant/me/ask`, actions) stay live until v2 is at
 parity on the eval suite.
 
-### Phase 0 — Production hardening (1–2 weeks)
+### Phase 0 — Production hardening ✅ implemented (2026-11-09)
 
-| Item | Why |
-|---|---|
-| `MemorySaver` → `AsyncPostgresSaver` in `actions/graph.py`, proposal TTL + single use | Confirmations break with >1 replica or a restart |
-| Redis-backed rate limiting | In-memory limits do not work across replicas |
-| OpenTelemetry + trace ids across API, workers, queue headers | You cannot run multi-agent without traces |
-| Real multilingual embedding model + HNSW + BM25 fusion | Hashing embedder will not hold up on real questions |
-| Numeric grounding output check (G8 #2) | Cheapest, highest-value guardrail; enforces the core principle |
-| Move eval cases to JSONL datasets + CI job | Foundation for the release gate |
-| Remove committed sample credentials from `.env.example` | Hygiene |
+Details, configuration and operations: [12-phase0-implementation.md](./12-phase0-implementation.md).
+
+| Item | Status | Why |
+|---|---|---|
+| `MemorySaver` → `AsyncPostgresSaver`, proposal TTL + single use | ✅ | Confirmations broke with >1 replica or a restart |
+| Redis-backed rate limiting, per user | ✅ | In-memory, per-IP limits do not work across replicas |
+| OpenTelemetry + request/trace ids across API, workers, queue headers | ✅ | You cannot run multi-agent without traces |
+| Real embedder options + indexed vector **and** full-text retrieval + re-embed job | ✅ | The HNSW index existed but was never queried; relevant chunks were silently skipped past 400 |
+| Numeric grounding output check (G8 #2) | ✅ | Cheapest, highest-value guardrail; enforces the core principle |
+| Eval cases as validated JSONL + runner + CI | ✅ | Foundation for the release gate |
+| Remove committed sample credentials from `.env.example` | ✅ (rotate the password: it is still in git history) | Hygiene |
+| Baseline metrics (ingest lag, msgs/s, CPU, WS count, memory) | ✅ Prometheus | Data to decide on any later optimisation |
+| JWT clock-skew leeway | ✅ added (found while testing) | Tokens were rejected as "issued in the future" when a clock stepped back |
 
 ### Phase 1 — Supervisor + first specialists (3–4 weeks)
 
@@ -25,11 +33,15 @@ parity on the eval suite.
 - Trajectory evals + multi-agent dataset. SSE streaming with status events.
 - Thread memory (checkpointer) for follow-up questions.
 
-### Phase 2 — Go performance plane, part 1 (parallel to Phase 1, 3–5 weeks)
+### Phase 2 — Guardrails & platform in Python (2–3 weeks, can overlap Phase 1)
 
-- `volta-ingest` in shadow mode → switch.
-- `volta-realtime` for dashboard + notifications WS/SSE.
-- Shared `proto/` schemas with `buf`.
+- Input guard as a FastAPI middleware plus a graph node: normalisation, regex/jailbreak fast-path, optional
+  classifier for grey-zone inputs.
+- PII masking and Redis vault as a Python package (`guardrails/pii.py`) with checksum validators.
+- Token budgets per user/tier in Redis, enforced in a FastAPI dependency and debited by graph nodes.
+- Policy checks (tool × agent, action × device) as plain Python modules first. Adopt OPA only if rules need to
+  change without a deploy.
+- Prompt/model registry and feature flags (kill switches per agent).
 
 ### Phase 3 — Planning agents (4–6 weeks)
 
@@ -40,15 +52,21 @@ parity on the eval suite.
 
 ### Phase 4 — Automation & ambient (4–6 weeks)
 
-- `volta-rules` (Go) for alerts and L3 automations; port `domain/alerts.py` with parity tests.
+- **Rule engine in Python** (`modules/automation/`): evaluates alerts and approved automations on each tick inside
+  the ingest worker or a dedicated consumer, emits state transitions only. Reuses `domain/alerts.py`.
 - **Automation Rule Agent** (NL → DSL, validate, dry-run, interrupt to approve). Backs the frontend rule builder.
-- `volta-executor` (Go) with outbox + audit.
+- **Command executor in Python** (extends `workers/device_commands.py`): outbox table, idempotency key, state
+  machine (`RECEIVED → VALIDATED → POLICY_OK → DISPATCHED → ACKED | FAILED | EXPIRED`), kill switch, per-device
+  rate limit, append-only audit. No LLM in this path.
 - **Monitor**, **Recommender**, **Reporter** ambient/batch agents; provider batch APIs.
 
-### Phase 5 — Edge, guard, scale (ongoing)
+### Phase 5 — Scale and operate (ongoing)
 
-- `volta-edge` + `volta-guard`, token budgets per tier, policy engine (OPA/Cedar).
-- Online judge sampling, canary pipeline, cost dashboards, red-team generator nightly.
+- Scale ingest workers horizontally (`--scale ingest-worker=N`, KEDA on queue lag). Batch Timescale writes
+  (`COPY`/`executemany`) and pipeline Redis calls.
+- Run several uvicorn workers per pod. Scale agent pods on in-flight requests.
+- Use an off-the-shelf gateway (Envoy, Kong or Traefik) for TLS, routing and coarse rate limits.
+- Online judge sampling, canary pipeline, cost dashboards, nightly red-team generator.
 
 ## 2. Suggested additions (beyond the brief)
 
@@ -67,7 +85,24 @@ parity on the eval suite.
 | **Feedback-driven prompt tuning loop** | 👎 traces → dataset → prompt PR → eval gate → canary | S |
 | **Self-hosted small models for guard/router** | Lower cost and latency, data stays in-region for the most frequent calls | M |
 
-## 3. Decisions to make early
+## 3. Keep the door open for Go (no work now)
+
+Build in a way that a later migration is cheap, and measure so the decision is based on data.
+
+| Habit | How |
+|---|---|
+| Hot paths behind interfaces | Ingest, live fan-out, rule evaluation and command execution each sit behind a `Protocol` port |
+| Queues and HTTP, not shared code | Services talk through RabbitMQ/Redis/HTTP so a consumer can be replaced in another language |
+| Schemas outside Python classes | Define `Tick`, `DeviceCommand`, `Incident` as JSON Schema (or protobuf) and generate Pydantic models from them |
+| Pure, fixture-tested rules | Validator, alerts and safety checks take plain inputs and return plain outputs. Save cases as JSON so a port can be proven identical |
+| Gateways, not direct storage access | Agents read through `EnergyDataGateway`-style classes, never tables or Redis keys |
+| Baseline metrics | Ingest lag, messages/s, CPU per tick, WebSocket count, memory per socket |
+
+**Triggers to reconsider Go** (any one, confirmed by benchmark): ingest cannot keep up on reasonable hardware or
+costs too much per home; one API pod cannot hold the target WebSocket count; L3 automations need a stricter
+audited executor than Python can provide. If none occur, Go is never needed.
+
+## 4. Decisions to make early
 
 | Decision | Recommendation |
 |---|---|
@@ -75,4 +110,4 @@ parity on the eval suite.
 | RabbitMQ vs NATS JetStream | Keep RabbitMQ (already running, quorum queues). Add RabbitMQ Streams for the tick stream to the rule engine before adding a second broker |
 | Self-host LangGraph runtime vs LangGraph Platform | Self-host on FastAPI + Postgres checkpointer (you already have the pieces). Revisit the platform if you need its assistants/cron/double-texting features out of the box |
 | One Python agent service vs one per agent | **One service**, agents as packages/subgraphs. Split only an agent that needs different scaling (e.g. a GPU-backed forecast model server) |
-| Go gateway: build vs adopt | Adopt (Envoy/Kong + OPA, an existing Go LLM gateway). Build only budgets and the guard fast-path |
+| Gateway: build vs adopt | Adopt Envoy/Kong/Traefik for edge concerns. Keep budgets, guards and policy in Python |

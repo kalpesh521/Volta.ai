@@ -14,12 +14,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import time
+from datetime import datetime, timezone
 
 import aio_pika
 from aio_pika import ExchangeType
 from aio_pika.abc import AbstractIncomingMessage
 
 from app.core.config import settings
+from app.core.logging_config import configure_logging
+from app.core.metrics import (
+    INGEST_MESSAGE_AGE_SECONDS,
+    INGEST_MESSAGES,
+    INGEST_SECONDS,
+    start_worker_metrics_server,
+)
+from app.core.telemetry import configure_telemetry, consumer_span, shutdown_telemetry
 from app.modules.energy.pipeline import process_telemetry_body
 from app.modules.energy.redis_live import RedisLiveStore
 from app.modules.energy.timescale_store import TimescaleTelemetryStore
@@ -78,10 +88,30 @@ async def handle_message(
     timescale: TimescaleTelemetryStore,
     redis_live: RedisLiveStore | None,
 ) -> None:
+    """Process one tick inside a span that continues the producer's trace, when it sent one."""
+    with consumer_span(
+        "ingest.process",
+        message.headers,
+        **{"messaging.system": "rabbitmq", "messaging.destination.name": settings.RABBITMQ_QUEUE},
+    ):
+        with INGEST_SECONDS.time():
+            await _process(
+                message, tolerance_kw=tolerance_kw, timescale=timescale, redis_live=redis_live
+            )
+
+
+async def _process(
+    message: AbstractIncomingMessage,
+    *,
+    tolerance_kw: float,
+    timescale: TimescaleTelemetryStore,
+    redis_live: RedisLiveStore | None,
+) -> None:
     try:
         decision = process_telemetry_body(message.body, tolerance_kw)
         if decision.action == "reject" or decision.record is None:
             logger.warning("dead-letter telemetry: %s", decision.reason)
+            INGEST_MESSAGES.labels(outcome="rejected").inc()
             await message.reject(requeue=False)
             return
 
@@ -97,6 +127,8 @@ async def handle_message(
                 )
 
         await message.ack()
+        INGEST_MESSAGES.labels(outcome="stored").inc()
+        INGEST_MESSAGE_AGE_SECONDS.observe(_age_seconds(record.timestamp))
         if record.energy_balance_status != "valid":
             logger.warning(
                 "ingested household=%s ts=%s with energy-balance warning error_kw=%s",
@@ -113,10 +145,17 @@ async def handle_message(
             )
     except Exception:
         logger.exception("ingest failed, requeue")
+        INGEST_MESSAGES.labels(outcome="requeued").inc()
         try:
             await message.nack(requeue=True)
         except Exception:
             pass
+
+
+def _age_seconds(timestamp: datetime) -> float:
+    """Seconds between the tick's own timestamp and now. Never negative."""
+    stamp = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc)
+    return max(0.0, time.time() - stamp.timestamp())
 
 
 async def run() -> None:
@@ -124,10 +163,9 @@ async def run() -> None:
     if not url:
         raise RuntimeError("RABBITMQ_URL is empty")
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
+    configure_telemetry(settings, service_name="volta-ingest-worker")
+    start_worker_metrics_server(settings.WORKER_METRICS_PORT)
 
     timescale = TimescaleTelemetryStore()
     await timescale.connect()
@@ -187,6 +225,7 @@ async def run() -> None:
         await timescale.close()
         if redis_live is not None:
             await redis_live.close()
+        shutdown_telemetry()
 
 
 def main() -> None:

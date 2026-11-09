@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, bindparam, func, or_, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.modules.knowledge.enums import ReviewStatus, Scope
 from app.modules.knowledge.models import (
     BillExtraction,
@@ -15,8 +18,15 @@ from app.modules.knowledge.models import (
     KnowledgeDocument,
     KnowledgeReview,
 )
-from app.modules.knowledge.retrieval import Candidate
+from app.modules.knowledge.retrieval import (
+    Candidate,
+    build_tsquery,
+    lexical_candidates_sql,
+    vector_candidates_sql,
+)
 from app.modules.onboarding.models import SolarSystem
+
+logger = logging.getLogger("volta.knowledge.repository")
 
 
 class KnowledgeRepository:
@@ -129,6 +139,83 @@ class KnowledgeRepository:
         )
         return result.scalar_one_or_none()
 
+    async def search_candidates(
+        self,
+        *,
+        user_id: uuid.UUID,
+        embedding_model: str,
+        doc_types: tuple[str, ...] | None,
+        query_vector: list[float],
+        question: str,
+        vector_limit: int,
+        lexical_limit: int,
+    ) -> list[Candidate]:
+        """
+        Candidates for ranking. On Postgres: nearest neighbours united with full-text matches.
+        Anywhere else, or if those indexed searches return nothing or fail, a bounded scan.
+        """
+        if self._uses_postgres_indexes():
+            indexed = await self._indexed_candidates(
+                user_id=user_id,
+                embedding_model=embedding_model,
+                doc_types=doc_types,
+                query_vector=query_vector,
+                tsquery=build_tsquery(question),
+                vector_limit=vector_limit,
+                lexical_limit=lexical_limit,
+            )
+            if indexed:
+                return indexed
+        return await self.candidates(user_id=user_id, embedding_model=embedding_model, doc_types=doc_types)
+
+    def _uses_postgres_indexes(self) -> bool:
+        return settings.KNOWLEDGE_USE_PGVECTOR and self.db.get_bind().dialect.name == "postgresql"
+
+    async def _indexed_candidates(
+        self,
+        *,
+        user_id: uuid.UUID,
+        embedding_model: str,
+        doc_types: tuple[str, ...] | None,
+        query_vector: list[float],
+        tsquery: str,
+        vector_limit: int,
+        lexical_limit: int,
+    ) -> list[Candidate]:
+        params: dict[str, object] = {"user_id": user_id, "embedding_model": embedding_model}
+        if doc_types:
+            params["doc_types"] = list(doc_types)
+        searches = [
+            (
+                vector_candidates_sql(filter_doc_types=bool(doc_types)),
+                {**params, "query_vector": _vector_literal(query_vector), "limit": vector_limit},
+            )
+        ]
+        if tsquery:
+            searches.append(
+                (
+                    lexical_candidates_sql(filter_doc_types=bool(doc_types)),
+                    {**params, "tsquery": tsquery, "limit": lexical_limit},
+                )
+            )
+
+        found: dict[str, Candidate] = {}
+        for sql, bound in searches:
+            statement = text(sql)
+            if doc_types:
+                statement = statement.bindparams(bindparam("doc_types", expanding=True))
+            try:
+                # A savepoint keeps one failing search (bad dimensions, missing column) from
+                # aborting the request's transaction.
+                async with self.db.begin_nested():
+                    rows = (await self.db.execute(statement, bound)).mappings().all()
+            except SQLAlchemyError:
+                logger.warning("indexed knowledge search failed; falling back to a scan", exc_info=True)
+                return []
+            for row in rows:
+                found.setdefault(str(row["chunk_id"]), _candidate_from_row(row))
+        return list(found.values())
+
     async def candidates(
         self,
         *,
@@ -175,23 +262,55 @@ class KnowledgeRepository:
         return candidates
 
     async def sync_pgvector(self, rows: list[tuple[uuid.UUID, list[float]]]) -> None:
-        """Fill the Postgres vector column when it exists. SQLite tests skip this."""
-        bind = self.db.get_bind()
-        if bind.dialect.name != "postgresql" or not rows:
+        """Fill the Postgres vector column used by the ANN index. SQLite tests skip this."""
+        if not rows or self.db.get_bind().dialect.name != "postgresql":
             return
-        from sqlalchemy import text
+        try:
+            async with self.db.begin_nested():
+                for chunk_id, vector in rows:
+                    await self.db.execute(
+                        text("UPDATE knowledge_chunks SET embedding_vec = CAST(:vector AS vector) WHERE id = :id"),
+                        {"vector": _vector_literal(vector), "id": chunk_id},
+                    )
+        except SQLAlchemyError:
+            # The JSON column still holds every embedding, so retrieval keeps working.
+            logger.warning("could not store pgvector embeddings for %d chunks", len(rows), exc_info=True)
 
-        for chunk_id, vector in rows:
-            literal = "[" + ",".join(f"{value:.8f}" for value in vector) + "]"
-            try:
-                await self.db.execute(
-                    text(
-                        "UPDATE knowledge_chunks SET embedding_vec = CAST(:vector AS vector) WHERE id = :id"
-                    ),
-                    {"vector": literal, "id": chunk_id},
-                )
-            except Exception:
-                return
+    async def documents_with_other_embedding_model(self, embedding_model: str, limit: int) -> list[KnowledgeDocument]:
+        """Documents embedded with a different model than the one now configured."""
+        result = await self.db.execute(
+            select(KnowledgeDocument)
+            .where(KnowledgeDocument.embedding_model != embedding_model)
+            .order_by(KnowledgeDocument.created_at)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def chunks_of(self, document_id: uuid.UUID) -> list[KnowledgeChunk]:
+        result = await self.db.execute(
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.document_id == document_id)
+            .order_by(KnowledgeChunk.chunk_index)
+        )
+        return list(result.scalars().all())
+
+
+def _vector_literal(vector: list[float]) -> str:
+    return "[" + ",".join(f"{value:.8f}" for value in vector) + "]"
+
+
+def _candidate_from_row(row) -> Candidate:
+    return Candidate(
+        document_id=str(row["document_id"]),
+        title=row["title"],
+        doc_type=row["doc_type"],
+        page=row["page_start"],
+        content=row["content"],
+        embedding=tuple(json.loads(row["embedding_json"])),
+        brand=row["brand"],
+        discom=row["discom"],
+        effective_date=row["effective_date"],
+    )
 
 
 def bill_payload(bill: BillExtraction | None) -> dict | None:

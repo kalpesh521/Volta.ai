@@ -23,7 +23,7 @@ class AuditEventOut(BaseModel):
 
 class ActionResponse(BaseModel):
     proposal_id: str
-    status: Literal["rejected", "awaiting_confirmation", "cancelled", "queued", "applied", "failed"]
+    status: Literal["rejected", "awaiting_confirmation", "expired", "cancelled", "queued", "applied", "failed"]
     device: str | None = None
     command: str | None = None
     duration_minutes: int | None = None
@@ -31,4 +31,5 @@ class ActionResponse(BaseModel):
     checks: dict[str, str] = Field(default_factory=dict)
     message: str
     command_id: str | None = None
+    expires_at: datetime | None = None
     audit: list[AuditEventOut] = Field(default_factory=list)

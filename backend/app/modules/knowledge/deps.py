@@ -39,4 +39,6 @@ def get_knowledge_service(
         chunk_overlap=ai.RAG_CHUNK_OVERLAP,
         top_k=ai.RAG_TOP_K,
         min_score=ai.RAG_MIN_SCORE,
+        vector_candidates=ai.RAG_VECTOR_CANDIDATES,
+        lexical_candidates=ai.RAG_LEXICAL_CANDIDATES,
     )

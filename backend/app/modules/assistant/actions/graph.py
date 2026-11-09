@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
@@ -72,7 +72,7 @@ class ActionRuntime:
     active_commands: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
 
-def build_action_graph(checkpointer: MemorySaver) -> CompiledStateGraph:
+def build_action_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     graph = StateGraph(ActionState, context_schema=ActionRuntime)
     graph.add_node(PARSE, parse_node)
     graph.add_node(LOAD, load_node)

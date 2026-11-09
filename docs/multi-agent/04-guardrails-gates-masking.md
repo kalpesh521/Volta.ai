@@ -24,7 +24,7 @@ flowchart LR
 | **G5 Tool authZ** | Tool wrapper | Agent allowed to call this tool? Scope bound to runtime household? Read vs write | Tool returns `forbidden`, logged as a security event | Implicit (closure binding) → make explicit |
 | **G6 Action safety** | Action agent + Go executor | RBAC, kill switch, reserve SOC, critical devices, inverter capacity, duplicate, freshness | Reject with reasons | Yes (`safety.py`) |
 | **G7 Human confirm** | `interrupt` | Explicit user confirmation, TTL, re-check after resume, single use | No command | Yes (MemorySaver → Postgres) |
-| **G8 Output guard** | Before final event | Schema, numeric grounding, citations, policy, PII leakage, tone/length | Retry once → deterministic fallback | Partial (schema only) |
+| **G8 Output guard** | Before final event | Schema, numeric grounding, citations, policy, PII leakage, tone/length | Retry once → deterministic fallback | Partial: schema + **numeric grounding** (Phase 0; falls back without a retry) |
 | **G9 Release gate** | CI/CD | Eval thresholds, red-team pass rate, cost/latency regressions | Block merge/deploy | No ([05](./05-evals.md)) |
 
 ## 2. Input guardrails (G1)

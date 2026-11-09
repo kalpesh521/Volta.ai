@@ -49,7 +49,12 @@ def create_access_token(user_id: uuid.UUID) -> str:
 
 def decode_token(token: str) -> dict:
     """Raises jwt.PyJWTError (or subclasses) on invalid/expired tokens - caller handles it."""
-    return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    return jwt.decode(
+        token,
+        settings.JWT_SECRET_KEY,
+        algorithms=[settings.JWT_ALGORITHM],
+        leeway=settings.JWT_LEEWAY_SECONDS,
+    )
 
 
 def generate_opaque_token() -> str:

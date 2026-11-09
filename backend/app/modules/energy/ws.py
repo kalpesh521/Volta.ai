@@ -10,6 +10,7 @@ import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.config import settings
+from app.core.metrics import track_ws_connection
 from app.core.cors import is_allowed_origin
 from app.core.database import AsyncSessionLocal
 from app.core.security import TokenType, decode_token
@@ -232,19 +233,20 @@ async def energy_live_socket(
         except Exception:
             stop.set()
 
-    tasks = [
-        asyncio.create_task(_heartbeat()),
-        asyncio.create_task(_pump_redis()),
-        asyncio.create_task(_client_watch()),
-    ]
-    try:
-        await stop.wait()
-    finally:
-        stop.set()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    with track_ws_connection("energy"):
+        tasks = [
+            asyncio.create_task(_heartbeat()),
+            asyncio.create_task(_pump_redis()),
+            asyncio.create_task(_client_watch()),
+        ]
         try:
-            await websocket.close()
-        except Exception:
-            pass
+            await stop.wait()
+        finally:
+            stop.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await websocket.close()
+            except Exception:
+                pass

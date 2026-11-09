@@ -9,6 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 
 from app.core.config import settings
+from app.core.metrics import track_ws_connection
 from app.core.database import AsyncSessionLocal
 from app.modules.assistant.actions.models import HomeNotification
 from app.modules.assistant.notifications.bus import iter_events, local_hub
@@ -147,19 +148,20 @@ async def notification_socket(
             except Exception:
                 stop.set()
 
-        tasks = [
-            asyncio.create_task(_heartbeat()),
-            asyncio.create_task(_pump_local()),
-            asyncio.create_task(_pump_redis()),
-            asyncio.create_task(_client_watch()),
-        ]
-        try:
-            await stop.wait()
-        finally:
-            stop.set()
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        with track_ws_connection("notifications"):
+            tasks = [
+                asyncio.create_task(_heartbeat()),
+                asyncio.create_task(_pump_local()),
+                asyncio.create_task(_pump_redis()),
+                asyncio.create_task(_client_watch()),
+            ]
+            try:
+                await stop.wait()
+            finally:
+                stop.set()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         local_hub.unsubscribe(household_id, queue)
         try:

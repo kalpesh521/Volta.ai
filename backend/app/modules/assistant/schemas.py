@@ -57,6 +57,14 @@ class UsageOut(BaseModel):
     total_tokens: int = 0
 
 
+class GroundingOut(BaseModel):
+    """Result of checking the answer's numbers against the facts the model was given."""
+
+    mode: Literal["observe", "enforce"]
+    checked: int
+    ungrounded: list[str] = Field(default_factory=list)
+
+
 class AssistantMeta(BaseModel):
     request_id: str
     llm_used: bool
@@ -67,6 +75,7 @@ class AssistantMeta(BaseModel):
     latency_ms: int
     usage: UsageOut
     tool_calls: list[ToolCallOut]
+    grounding: GroundingOut | None = None
 
 
 class AssistantResponse(BaseModel):

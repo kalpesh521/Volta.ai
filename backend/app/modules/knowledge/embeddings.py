@@ -15,6 +15,7 @@ import re
 from typing import Protocol
 
 from app.ai.config import AISettings
+from app.ai.llm.providers import get_provider
 
 logger = logging.getLogger("volta.knowledge.embeddings")
 
@@ -94,9 +95,41 @@ def _remote_embedder(provider: str, model: str, dimensions: int, settings: AISet
         except ImportError:
             logger.warning("langchain-google-genai embeddings are not installed")
             return None
-        client = GoogleGenerativeAIEmbeddings(model=model, google_api_key=key.get_secret_value())
-        return _LangChainEmbedder(client, model_name=f"google:{model}", dimensions=dimensions)
+        kwargs = {"model": model, "google_api_key": key.get_secret_value()}
+        if dimensions:
+            kwargs["output_dimensionality"] = dimensions
+        return _LangChainEmbedder(
+            GoogleGenerativeAIEmbeddings(**kwargs), model_name=f"google:{model}", dimensions=dimensions
+        )
+    if provider == "openrouter":
+        return _openrouter_embedder(model, dimensions, settings)
     return None
+
+
+def _openrouter_embedder(model: str, dimensions: int, settings: AISettings) -> Embedder | None:
+    """OpenRouter exposes an OpenAI-compatible /embeddings endpoint, so one key covers chat and RAG."""
+    key = settings.OPENROUTER_API_KEY
+    if key is None or not key.get_secret_value().strip():
+        return None
+    try:
+        from langchain_openai import OpenAIEmbeddings
+    except ImportError:
+        logger.warning("langchain-openai is not installed")
+        return None
+    kwargs: dict = {
+        "model": model,
+        "api_key": key.get_secret_value(),
+        "base_url": settings.AI_LLM_BASE_URL.strip() or get_provider("openrouter").default_base_url,
+        # OpenRouter models are not tiktoken-known; let the server enforce its own limit.
+        "check_embedding_ctx_length": False,
+    }
+    # Only OpenAI's text-embedding-3 family can return shorter vectors natively. Others are
+    # trimmed to `dimensions` after the call (see `_fit`), which loses some accuracy.
+    if dimensions and "text-embedding-3" in model:
+        kwargs["dimensions"] = dimensions
+    return _LangChainEmbedder(
+        OpenAIEmbeddings(**kwargs), model_name=f"openrouter:{model}", dimensions=dimensions
+    )
 
 
 class _LangChainEmbedder:

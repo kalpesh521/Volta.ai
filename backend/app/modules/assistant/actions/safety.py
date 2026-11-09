@@ -119,6 +119,8 @@ def explain(decision: str, reasons: tuple[str, ...] | list[str], device: str | N
         )
     if decision == "cancelled":
         return labels["user_declined"]
+    if decision == "expired":
+        return "This confirmation expired and nothing was sent. Ask again if you still want it."
     if decision == "rejected" and "user_declined" in reasons:
         return "You rejected the action. Nothing was sent."
     if decision == "applied":

@@ -11,7 +11,6 @@ dependencies before the graph runs.
 Do not add `from __future__ import annotations` in this file. slowapi wraps
 the handlers and cannot resolve postponed annotations.
 """
-import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -21,6 +20,7 @@ from app.ai.llm.factory import ChatModelFactory
 from app.ai.llm.gateway import StructuredLLM
 from app.core.deps import get_current_user
 from app.core.rate_limit import limiter
+from app.core.request_context import get_request_id, new_request_id
 from app.models.user import User
 from app.modules.assistant.deps import (
     get_assistant_service,
@@ -35,14 +35,10 @@ from app.modules.onboarding.models import SolarSystem
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
-_MAX_REQUEST_ID = 64
-
 
 def _request_id(request: Request) -> str:
-    supplied = (request.headers.get("x-request-id") or "").strip()
-    if supplied and supplied.isprintable():
-        return supplied[:_MAX_REQUEST_ID]
-    return uuid.uuid4().hex
+    """The id the request-context middleware validated (or generated) for this request."""
+    return get_request_id() or new_request_id()
 
 
 @router.get(

@@ -12,6 +12,8 @@ import aio_pika
 from aio_pika import DeliveryMode, ExchangeType, Message
 
 from app.core.config import settings
+from app.core.request_context import headers_with_request_id
+from app.core.telemetry import get_tracer, inject_trace_headers
 
 logger = logging.getLogger("volta.actions.publisher")
 
@@ -77,16 +79,18 @@ class RabbitDevicePublisher:
                 "issued_at": datetime.now(timezone.utc).isoformat(),
                 "applied": False,
             }
-            await exchange.publish(
-                Message(
-                    body=json.dumps(body).encode("utf-8"),
-                    content_type="application/json",
-                    delivery_mode=DeliveryMode.PERSISTENT,
-                    message_id=command.command_id,
-                    type="device.command",
-                ),
-                routing_key=self._routing_key,
-            )
+            with get_tracer().start_as_current_span("device_command.publish"):
+                await exchange.publish(
+                    Message(
+                        body=json.dumps(body).encode("utf-8"),
+                        content_type="application/json",
+                        delivery_mode=DeliveryMode.PERSISTENT,
+                        message_id=command.command_id,
+                        type="device.command",
+                        headers=inject_trace_headers(headers_with_request_id()),
+                    ),
+                    routing_key=self._routing_key,
+                )
         except CommandBrokerError:
             raise
         except Exception as exc:

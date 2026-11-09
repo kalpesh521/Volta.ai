@@ -31,10 +31,23 @@ celery==5.4.0
 langchain==1.4.3
 langchain-core==1.6.6
 langgraph==1.2.12
+# Durable graph checkpoints (pending device confirmations survive restarts and replicas).
+langgraph-checkpoint-postgres==3.2.0
+psycopg[binary,pool]==3.3.8
 # Provider adapters. Install only what you configure in AI_*_PROVIDER.
 langchain-anthropic==1.7.5
 langchain-openai==1.6.7
 langchain-google-genai==4.4.0
+
+# --- Observability ---
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+opentelemetry-instrumentation-redis==0.66b2
+opentelemetry-instrumentation-sqlalchemy==0.66b2
+prometheus-client==0.26.0
 
 # --- Testing ---
 pytest==8.3.4

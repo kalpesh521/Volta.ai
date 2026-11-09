@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import BaseModel, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -68,6 +69,11 @@ class AISettings(BaseSettings):
     AI_TREND_WINDOW_MINUTES: int = 60
     AI_TREND_HISTORY_LIMIT: int = 240
     RATE_LIMIT_ASSISTANT: str = "20/minute"
+    # Every number in an LLM answer must trace back to the facts it was given.
+    #   enforce  ungrounded answer is replaced by the deterministic one (default)
+    #   observe  logged and counted, the LLM answer is still returned (use to measure first)
+    #   off      no check
+    AI_GROUNDING_MODE: Literal["off", "observe", "enforce"] = "enforce"
 
     # Empty provider keeps the local hashing embedder (no API key, stable tests).
     AI_EMBEDDING_PROVIDER: str = ""
@@ -77,6 +83,18 @@ class AISettings(BaseSettings):
     RAG_CHUNK_OVERLAP: int = 120
     RAG_TOP_K: int = 5
     RAG_MIN_SCORE: float = 0.08
+    # Candidates taken from each indexed search (nearest neighbours, full-text) before ranking.
+    RAG_VECTOR_CANDIDATES: int = 40
+    RAG_LEXICAL_CANDIDATES: int = 40
+
+    # LangGraph checkpoints (conversation state, pending confirmations).
+    # "memory" is per process and is lost on restart: development and tests only.
+    AI_CHECKPOINT_BACKEND: Literal["memory", "postgres"] = "memory"
+    # Empty reuses DATABASE_URL. Tables live in their own schema, away from OLTP tables.
+    AI_CHECKPOINT_DATABASE_URL: str = ""
+    AI_CHECKPOINT_SCHEMA: str = "langgraph"
+    AI_CHECKPOINT_POOL_MIN: int = 1
+    AI_CHECKPOINT_POOL_MAX: int = 10
 
     LANGSMITH_TRACING: bool = False
     LANGSMITH_API_KEY: SecretStr | None = None

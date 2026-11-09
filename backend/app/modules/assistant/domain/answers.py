@@ -38,6 +38,14 @@ class FallbackReason(StrEnum):
     KNOWLEDGE_GAP = "knowledge_gap"
     LLM_UNAVAILABLE = "llm_unavailable"
     LLM_ERROR = "llm_error"
+    UNGROUNDED = "ungrounded_numbers"
+
+
+_FALLBACK_NOTES: dict[FallbackReason, str] = {
+    FallbackReason.LLM_UNAVAILABLE: " (Summary generated without the AI model.)",
+    FallbackReason.LLM_ERROR: " (Summary generated without the AI model.)",
+    FallbackReason.UNGROUNDED: " (Verified summary shown: the AI wording contained numbers that are not in your data.)",
+}
 
 
 _VERDICT_ADVICE: dict[ApplianceVerdict, str] = {
@@ -278,20 +286,18 @@ def compose_fallback_answer(
         return _knowledge_gap_answer(context)
 
     primary = intents[0] if intents else Intent.LIVE_OVERVIEW
-    no_model_note = reason in (FallbackReason.LLM_UNAVAILABLE, FallbackReason.LLM_ERROR)
+    note = _FALLBACK_NOTES.get(reason, "")
 
     if primary is Intent.HOME_PROFILE:
         profile = _home_profile_answer(context)
         if profile is not None:
-            if no_model_note:
-                profile.explanation += " (Summary generated without the AI model.)"
+            profile.explanation += note
             return profile
 
     if primary is Intent.DOCUMENT and context.knowledge is not None:
         drafted = _document_answer(context)
         if drafted is not None:
-            if no_model_note:
-                drafted.explanation += " (Summary generated without the AI model.)"
+            drafted.explanation += note
             return drafted
 
     observation_parts = [p for p in (_live_sentence(context), _daily_sentence(context)) if p]
@@ -348,8 +354,8 @@ def compose_fallback_answer(
             recommendation = "Run flexible appliances now to use surplus solar instead of exporting it."
             impact = f"Up to {analytics.solar_surplus.surplus_kw:.2f} kW of solar could be used at home."
 
-    if no_model_note:
-        explanation_parts.append("(Summary generated without the AI model.)")
+    if note:
+        explanation_parts.append(note.strip())
 
     return AnswerDraft(
         observation=" ".join(observation_parts) or "Live readings are not available right now.",

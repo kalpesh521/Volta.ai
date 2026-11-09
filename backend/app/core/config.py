@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "change-this-secret-in-env"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    # Clock-skew tolerance when validating token times. Servers (and WSL/VM clocks) drift by a
+    # fraction of a second to a few seconds, and a token must not be rejected as "issued in the
+    # future" because the validating clock is slightly behind the issuing one.
+    JWT_LEEWAY_SECONDS: int = 10
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
 
@@ -61,6 +65,9 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
 
     # --- Rate limiting ---
+    # Empty keeps counters in this process (fine for one replica, wrong for several).
+    # Set a Redis URL (use a database index other than the live-data one) to share counters.
+    RATE_LIMIT_STORAGE_URI: str = ""
     RATE_LIMIT_LOGIN: str = "5/minute"
     RATE_LIMIT_PASSWORD_RESET: str = "3/minute"
     RATE_LIMIT_INGEST: str = "120/minute"
@@ -126,6 +133,10 @@ class Settings(BaseSettings):
     # KILL_SWITCH true means every command is rejected.
     DEVICE_CONTROL_ENABLED: bool = False
     DEVICE_KILL_SWITCH: bool = True
+    # How long a proposed action may wait for the user's confirmation.
+    ACTION_CONFIRMATION_TTL_SECONDS: int = 120
+    # Finished or expired proposals keep their LangGraph checkpoint this long before pruning.
+    ACTION_CHECKPOINT_RETENTION_HOURS: int = 24
     DEVICE_COMMAND_EXCHANGE: str = "device.commands"
     DEVICE_COMMAND_QUEUE: str = "device.commands"
     DEVICE_COMMAND_SIMULATOR_QUEUE: str = "simulator.device.commands"
@@ -138,6 +149,20 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str = ""
     SENDGRID_API_KEY: str = ""
     EMAIL_FROM: str = "Suryaa <alerts@localhost>"
+
+    # --- Observability ---
+    LOG_LEVEL: str = "INFO"
+    # One JSON object per line (for log shippers). Plain text is easier to read locally.
+    LOG_JSON: bool = False
+    # Traces are exported over OTLP/HTTP. Off by default; the request-id and log
+    # correlation below work without it.
+    OTEL_ENABLED: bool = False
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = ""  # e.g. http://otel-collector:4318
+    OTEL_TRACES_SAMPLER_RATIO: float = 1.0
+    # Prometheus. /metrics is unauthenticated: expose it on an internal network only.
+    METRICS_ENABLED: bool = False
+    # Workers have no HTTP server; a port above 0 starts a metrics endpoint for them.
+    WORKER_METRICS_PORT: int = 0
 
 
 @lru_cache

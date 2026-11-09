@@ -1,10 +1,16 @@
 """
 Metadata-filtered hybrid retrieval.
 
-Candidates are already limited to published shared documents plus the asking
-user's private documents. Scoring mixes cosine similarity with lexical overlap,
-boosts brand / DISCOM / recency, then applies maximal marginal relevance so
-five copies of the same paragraph do not fill the context.
+On Postgres, candidates come from two indexed searches whose results are united:
+
+  * nearest neighbours by embedding (pgvector HNSW), for meaning, and
+  * full-text matches (GIN on a tsvector), for exact words such as fault codes.
+
+Both are limited to published shared documents plus the asking user's private
+documents. The union is then scored in Python: cosine similarity mixed with
+lexical overlap, boosts for brand / DISCOM / recency, and maximal marginal
+relevance so five copies of the same paragraph do not fill the context.
+Without Postgres (tests, SQLite) the repository scans a bounded set instead.
 """
 from __future__ import annotations
 
@@ -17,8 +23,8 @@ from app.modules.knowledge.enums import DocType
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 
-# Production path. The user id predicate is not optional.
-PGVECTOR_SQL = """
+# Both queries share one visibility filter. The user id predicate is not optional.
+_CANDIDATE_SELECT = """
 SELECT
     c.id AS chunk_id,
     c.content AS content,
@@ -38,10 +44,48 @@ WHERE d.status = 'published'
         d.scope = 'shared'
         OR (d.scope = 'private' AND d.owner_user_id = :user_id)
       )
-  AND (:doc_type IS NULL OR d.doc_type = :doc_type)
-ORDER BY c.embedding_vec <=> CAST(:query_vector AS vector)
-LIMIT :limit
 """
+_DOC_TYPE_FILTER = "  AND d.doc_type IN :doc_types\n"
+
+
+def vector_candidates_sql(*, filter_doc_types: bool) -> str:
+    """Nearest chunks by cosine distance. Chunks without a stored vector are skipped."""
+    return (
+        _CANDIDATE_SELECT
+        + "  AND c.embedding_vec IS NOT NULL\n"
+        + (_DOC_TYPE_FILTER if filter_doc_types else "")
+        + "ORDER BY c.embedding_vec <=> CAST(:query_vector AS vector)\nLIMIT :limit"
+    )
+
+
+def lexical_candidates_sql(*, filter_doc_types: bool) -> str:
+    """Chunks containing any query word, best full-text rank first."""
+    return (
+        _CANDIDATE_SELECT
+        + "  AND c.content_tsv @@ to_tsquery('simple', :tsquery)\n"
+        + (_DOC_TYPE_FILTER if filter_doc_types else "")
+        + "ORDER BY ts_rank_cd(c.content_tsv, to_tsquery('simple', :tsquery), 32) DESC\nLIMIT :limit"
+    )
+
+
+_STOPWORDS = frozenset(
+    "a an and are as at be by can could do does for from has have how i in is it its me my of on or "
+    "our should so that the their there this to was we what when where which who why will with would you your".split()
+)
+_MAX_QUERY_TERMS = 24
+
+
+def build_tsquery(question: str) -> str:
+    """
+    OR-query of the meaningful words in a question, for `to_tsquery('simple', ...)`.
+
+    Words are kept to `[a-z0-9]+`, so the result can never contain tsquery syntax.
+    Returns an empty string when nothing meaningful is left.
+    """
+    terms = dict.fromkeys(
+        token for token in _TOKEN.findall(question.lower()) if len(token) >= 2 and token not in _STOPWORDS
+    )
+    return " | ".join(list(terms)[:_MAX_QUERY_TERMS])
 
 
 @dataclass(frozen=True)

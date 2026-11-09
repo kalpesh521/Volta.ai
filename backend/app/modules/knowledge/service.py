@@ -62,6 +62,8 @@ class KnowledgeService:
         chunk_overlap: int,
         top_k: int,
         min_score: float,
+        vector_candidates: int = 40,
+        lexical_candidates: int = 40,
     ) -> None:
         self._repo = repo
         self._embedder = embedder
@@ -71,6 +73,8 @@ class KnowledgeService:
         self._chunk_overlap = chunk_overlap
         self._top_k = top_k
         self._min_score = min_score
+        self._vector_candidates = vector_candidates
+        self._lexical_candidates = lexical_candidates
 
     async def upload_private(
         self,
@@ -228,19 +232,23 @@ class KnowledgeService:
         }
 
     async def _search(self, user_id, question, doc_types, *, brand, discom):
-        candidates = await self._repo.candidates(
-            user_id=user_id,
-            embedding_model=self._embedder.model_name,
-            doc_types=doc_types,
-        )
-        if not candidates:
-            return []
         query = question
         if brand:
             query = f"{query}\n{brand}"
         if discom:
             query = f"{query}\n{discom}"
         vector = await self._embedder.embed_query(query)
+        candidates = await self._repo.search_candidates(
+            user_id=user_id,
+            embedding_model=self._embedder.model_name,
+            doc_types=doc_types,
+            query_vector=vector,
+            question=question,
+            vector_limit=self._vector_candidates,
+            lexical_limit=self._lexical_candidates,
+        )
+        if not candidates:
+            return []
         return rank_passages(
             candidates,
             vector,
@@ -251,6 +259,27 @@ class KnowledgeService:
             discom=discom,
             today=date.today(),
         )
+
+    async def reembed_stale(self, limit: int) -> int:
+        """
+        Re-embed up to `limit` documents that were embedded with another model than the one now
+        configured. Search only sees documents embedded with the current model, so after
+        switching embedders every older document is invisible until this has run.
+        Returns how many documents were converted; zero means nothing is left.
+        """
+        model = self._embedder.model_name
+        documents = await self._repo.documents_with_other_embedding_model(model, limit)
+        for document in documents:
+            chunks = await self._repo.chunks_of(document.id)
+            vectors = await self._embedder.embed_documents(
+                [embed_input(document.title, document.doc_type, chunk.page_start, chunk.content) for chunk in chunks]
+            )
+            for chunk, vector in zip(chunks, vectors, strict=True):
+                chunk.embedding_json = _dump_vector(vector)
+            document.embedding_model = model
+            await self._repo.sync_pgvector([(chunk.id, vector) for chunk, vector in zip(chunks, vectors, strict=True)])
+            logger.info("knowledge re-embedded id=%s chunks=%d model=%s", document.id, len(chunks), model)
+        return len(documents)
 
     async def _ingest(
         self,

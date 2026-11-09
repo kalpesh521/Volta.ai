@@ -20,7 +20,7 @@ from app.ai.config import AISettings
 from app.ai.llm.gateway import StructuredLLM
 from app.modules.assistant.tools.registry import ToolName
 
-Route = Literal["generate", "fallback", "finalize"]
+Route = Literal["generate", "ground", "fallback", "finalize"]
 
 
 class ToolCallRecord(TypedDict):
@@ -66,6 +66,7 @@ class AssistantState(TypedDict, total=False):
     fallback_reason: str | None
 
     answer: dict[str, str]
+    grounding: dict[str, Any]
     llm_used: bool
     confidence: str
 

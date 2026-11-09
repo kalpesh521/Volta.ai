@@ -27,6 +27,8 @@ class ActionProposal(Base):
     reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     checks_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Set while the proposal waits for the user. After this time it can no longer be confirmed.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=_utcnow, nullable=False
     )

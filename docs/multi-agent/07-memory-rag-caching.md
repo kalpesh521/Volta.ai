@@ -32,9 +32,9 @@ Today: hashing embedder (256-dim), hybrid cosine + lexical, boosts, MMR, owner/s
 
 | Upgrade | Why | Priority |
 |---|---|---|
-| Real embedding model (multilingual) | Hashing has no semantics; Hindi/Marathi questions vs English manuals need a multilingual embedder | **P0** |
-| HNSW index on `embedding_vec` + `ef_search` tuning | Sub-linear ANN at scale | P0 |
-| True BM25 (Postgres full-text `tsvector` or ParadeDB `pg_search`) fused with vector via RRF | Fault codes ("E04"), model numbers and tariff clause ids are lexical | P0 |
+| Real embedding model (multilingual) | Hashing has no semantics; Hindi/Marathi questions vs English manuals need a multilingual embedder | Providers wired in Phase 0 (OpenAI, Google, OpenRouter) + `reembed` job. **Choosing and enabling a model is still your call** |
+| Query the HNSW index (it existed but retrieval scanned the newest 400 chunks in Python) | Sub-linear ANN, and no silent loss of older chunks | ✅ done in Phase 0. `ef_search` tuning and `hnsw.iterative_scan` still open |
+| Full-text candidates (Postgres `tsvector` + GIN, `ts_rank_cd`) united with vector candidates | Fault codes ("E04"), model numbers and tariff clause ids are lexical | ✅ done in Phase 0 (candidate union, final score unchanged). True BM25 / RRF fusion still open |
 | Structure-aware chunking (headings, tables, fault-code tables as rows) | Manuals are tabular | P1 |
 | Contextual chunk headers ("Growatt SPF 5000 manual › Fault codes › E04") prepended before embedding | Better recall for short chunks | P1 |
 | Reranker (cross-encoder) top-30 → top-5 | Precision | P1 |

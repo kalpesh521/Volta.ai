@@ -11,12 +11,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 
+from app.ai.checkpointer import checkpointer_provider
 from app.ai.config import ai_settings
 from app.ai.observability import configure_tracing
 from app.core.config import settings
 from app.core.cors import cors_origin_regex
 from app.core.exceptions import register_exception_handlers
+from app.core.logging_config import configure_logging
+from app.core.metrics import metrics_endpoint
 from app.core.rate_limit import limiter
+from app.core.request_context import REQUEST_ID_HEADER, RequestContextMiddleware
+from app.core.telemetry import configure_telemetry, shutdown_telemetry
 from app.modules.assistant.actions.router import router as action_router
 from app.modules.assistant.ops.router import router as home_ops_router
 from app.modules.assistant.router import router as assistant_router
@@ -36,8 +41,24 @@ _UNSAFE_INGEST_TOKENS = frozenset(
 )
 
 
+def _is_production() -> bool:
+    return settings.ENVIRONMENT.lower() == "production"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging(settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
+
+    if _is_production():
+        if ai_settings.AI_CHECKPOINT_BACKEND != "postgres":
+            raise RuntimeError(
+                "AI_CHECKPOINT_BACKEND must be 'postgres' when ENVIRONMENT=production "
+                "(pending device confirmations would be lost on restart)"
+            )
+        if not settings.RATE_LIMIT_STORAGE_URI.strip():
+            logger.warning(
+                "RATE_LIMIT_STORAGE_URI is empty: rate limits are per process, not shared across replicas"
+            )
     if settings.ENVIRONMENT.lower() == "production":
         token = (settings.INGEST_TOKEN or "").strip()
         if token in _UNSAFE_INGEST_TOKENS:
@@ -51,6 +72,9 @@ async def lifespan(app: FastAPI):
             )
 
     configure_tracing(ai_settings)
+
+    # Tables are created by the migration job in production; elsewhere the API creates them.
+    await checkpointer_provider.start(ai_settings, auto_setup=not _is_production())
 
     app.state.timescale = None
     app.state.redis_live = None
@@ -83,6 +107,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    from app.modules.assistant.actions.deps import get_action_graph
+
+    get_action_graph.cache_clear()
+    await checkpointer_provider.stop()
+    shutdown_telemetry()
+
     timescale = getattr(app.state, "timescale", None)
     redis_live = getattr(app.state, "redis_live", None)
     if timescale is not None:
@@ -92,6 +122,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
+configure_telemetry(settings, service_name="volta-api", app=app)
 
 # --- Rate limiting (slowapi) - 429 shape normalized in register_exception_handlers()
 app.state.limiter = limiter
@@ -106,7 +137,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[REQUEST_ID_HEADER],
 )
+
+# Outermost, so the request id exists for every other layer and every log line.
+app.add_middleware(RequestContextMiddleware)
 
 # --- All errors → {"success": false, "error": {"code": "...", "message": "..."}}
 register_exception_handlers(app)
@@ -123,6 +158,11 @@ app.include_router(action_router)       # /assistant/actions/*  confirm before a
 app.include_router(home_ops_router)     # recommendations, alerts, automation rules
 app.include_router(knowledge_router)    # /knowledge/*  admin and user documents
 app.include_router(webui_router)        # /ui  temporary energy HTML (not production)
+
+
+if settings.METRICS_ENABLED:
+    # Prometheus scrape target. Unauthenticated: keep it on an internal network.
+    app.add_api_route("/metrics", metrics_endpoint, include_in_schema=False)
 
 
 @app.get("/health", tags=["health"])
@@ -146,12 +186,16 @@ async def ready_check() -> dict:
             redis_ok = await redis_live.ping()
         except Exception:
             redis_ok = False
+    checkpointer_ok = await checkpointer_provider.ping()
     status = "ok" if (timescale_ok and redis_ok) or not settings.TELEMETRY_IO_ENABLED else "degraded"
-    if settings.ENVIRONMENT.lower() == "production" and not (timescale_ok and redis_ok):
+    if _is_production() and not (timescale_ok and redis_ok and checkpointer_ok):
         status = "not_ready"
+    elif not checkpointer_ok:
+        status = "degraded"
     return {
         "status": status,
         "timescale": timescale_ok,
         "redis": redis_ok,
+        "checkpointer": checkpointer_ok,
         "telemetry_io": settings.TELEMETRY_IO_ENABLED,
     }

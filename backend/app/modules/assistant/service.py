@@ -15,6 +15,7 @@ from langgraph.graph.state import CompiledStateGraph
 from app.ai.config import AISettings, LLMRole
 from app.ai.llm.factory import ChatModelFactory
 from app.ai.llm.gateway import StructuredLLM
+from app.core.metrics import ASSISTANT_REQUESTS, ASSISTANT_SECONDS, LLM_TOKENS
 from app.modules.assistant.graph.state import AssistantRuntime, AssistantState
 from app.modules.assistant.prompts import PROMPT_VERSION
 from app.modules.assistant.schemas import (
@@ -23,6 +24,7 @@ from app.modules.assistant.schemas import (
     AssistantResponse,
     AssistantStatusOut,
     FreshnessOut,
+    GroundingOut,
     ModelStatusOut,
     SourceOut,
     ToolCallOut,
@@ -110,6 +112,7 @@ class AssistantService:
             request_id=request_id,
             latency_ms=latency_ms,
         )
+        _record_metrics(response, state, latency_ms)
         logger.info(
             "assistant request_id=%s household=%s intents=%s tools=%s llm_used=%s "
             "fallback=%s confidence=%s tokens=%d latency_ms=%d question_chars=%d",
@@ -174,8 +177,23 @@ def to_response(
             latency_ms=latency_ms,
             usage=usage,
             tool_calls=tool_calls,
+            grounding=_grounding(state),
         ),
     )
+
+
+def _grounding(state: AssistantState) -> GroundingOut | None:
+    record = state.get("grounding")
+    return GroundingOut.model_validate(record) if record else None
+
+
+def _record_metrics(response: AssistantResponse, state: AssistantState, latency_ms: int) -> None:
+    path = "llm" if response.meta.llm_used else "deterministic"
+    ASSISTANT_REQUESTS.labels(path=path, fallback_reason=response.meta.fallback_reason or "none").inc()
+    ASSISTANT_SECONDS.labels(path=path).observe(latency_ms / 1000)
+    for call in state.get("llm_calls", []):
+        LLM_TOKENS.labels(model=call["model"], direction="input").inc(call["input_tokens"])
+        LLM_TOKENS.labels(model=call["model"], direction="output").inc(call["output_tokens"])
 
 
 def assistant_status(settings: AISettings, llm: StructuredLLM, factory: ChatModelFactory) -> AssistantStatusOut:

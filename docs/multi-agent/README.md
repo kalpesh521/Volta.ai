@@ -16,12 +16,14 @@ Target architecture for moving Suryaa from one assistant graph to a production, 
 | 03 | [LangGraph design](./03-langgraph-design.md) | Supervisor + subgraphs, state, `Send` fan-out, checkpoints, interrupts, streaming, code skeletons |
 | 04 | [Guardrails, gates & masking](./04-guardrails-gates-masking.md) | Input/output guardrails, the 10 gates, PII masking vault, injection defence |
 | 05 | [Evals](./05-evals.md) | Offline, online, trajectory, safety, LLM-as-judge, CI release gates |
-| 06 | [Go performance plane](./06-golang-performance-plane.md) | Where Go beats FastAPI, where it does not, service contracts |
+| 06 | [Go performance plane](./06-golang-performance-plane.md) | **Future option, not in the current roadmap.** Where Go would beat FastAPI, and service contracts if you ever add it |
 | 07 | [Memory, RAG & caching](./07-memory-rag-caching.md) | Thread memory, long-term store, retrieval upgrades, semantic cache |
 | 08 | [Observability & LLMOps](./08-observability-llmops.md) | Tracing, metrics, SLOs, cost, prompt registry, model routing |
 | 09 | [Security & compliance](./09-security-compliance.md) | Tenant isolation, tool authZ, audit, secrets, DPDP Act 2023 |
 | 10 | [Deployment & scaling](./10-deployment-scaling.md) | Kubernetes topology, autoscaling, resilience, DR |
 | 11 | [Roadmap & suggestions](./11-roadmap-suggestions.md) | Phased plan from today's code, plus new agent ideas |
+| 12 | [Phase 0 implementation](./12-phase0-implementation.md) | What was built in Phase 0, how to configure and operate it, known limits |
+| 13 | [Progress tracker](./13-progress-tracker.md) | Status of every phase and item, what each delivered, open follow-ups, decision log |
 
 ## The five rules that run through every document
 

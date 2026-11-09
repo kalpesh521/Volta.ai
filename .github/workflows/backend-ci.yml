@@ -1,0 +1,97 @@
+name: backend-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "backend/**"
+      - "docker-compose.yml"
+      - ".github/workflows/backend-ci.yml"
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: volta
+          POSTGRES_PASSWORD: volta
+          POSTGRES_DB: volta_auth
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U volta -d volta_auth"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://volta:volta@localhost:5432/volta_auth
+      DB_SSL_REQUIRED: "false"
+      TELEMETRY_IO_ENABLED: "false"
+      # Opt-in integration tests that need real services.
+      TEST_POSTGRES_URL: postgresql+asyncpg://volta:volta@localhost:5432/volta_auth
+      TEST_REDIS_URL: redis://localhost:6379/15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Migrations have a single head
+        run: |
+          heads="$(alembic heads | grep -c '(head)')"
+          test "$heads" = "1" || { echo "expected one alembic head, found $heads"; alembic heads; exit 1; }
+
+      - name: Migrations apply to a clean database
+        run: alembic upgrade head
+
+      - name: Checkpoint tables can be created
+        run: python -m app.ai.checkpointer setup
+        env:
+          AI_CHECKPOINT_BACKEND: postgres
+
+      - name: Routing evals
+        run: python -m app.modules.assistant.evals --report eval-report.json
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: backend/eval-report.json
+          if-no-files-found: ignore
+
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker-compose.yml is valid
+        run: docker compose config -q

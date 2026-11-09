@@ -18,10 +18,12 @@ from langgraph.runtime import Runtime
 from app.ai.config import LLMRole
 from app.ai.errors import LLMInvocationError, LLMNotConfiguredError
 from app.ai.llm.gateway import StructuredResult
+from app.core.metrics import GROUNDING_CHECKS
 from app.modules.assistant.domain.analytics import Analytic, AnalyticsBundle, Severity, run_analytics
 from app.modules.assistant.domain.answers import AnswerDraft, FallbackReason, compose_fallback_answer
 from app.modules.assistant.domain.context import AIContext, fit_to_budget
 from app.modules.assistant.domain.freshness import DataFreshness, FreshnessStatus, assess_freshness
+from app.modules.assistant.domain.grounding import check_grounding
 from app.modules.assistant.domain.projection import Detail, project_prompt
 from app.modules.assistant.domain.intents import (
     ApplianceType,
@@ -48,6 +50,7 @@ SELECT_TOOLS = "select_tools"
 CALL_TOOLS = "call_tools"
 ANALYZE = "analyze"
 GENERATE = "generate"
+GROUND = "ground"
 FALLBACK = "fallback"
 FINALIZE = "finalize"
 
@@ -276,11 +279,55 @@ async def generate(
         "answer": result.output.model_dump(),
         "llm_used": True,
         "llm_calls": [_llm_record(LLMRole.ANSWER, result)],
-        "route": FINALIZE,
+        "route": GROUND,
     }
 
 
 def route_after_generate(state: AssistantState) -> str:
+    return FALLBACK if state.get("route") == FALLBACK else GROUND
+
+
+def ground(state: AssistantState, runtime: Runtime[AssistantRuntime]) -> dict[str, Any]:
+    """
+    Output guard: every number in the LLM answer must come from the facts it was shown.
+
+    In `enforce` mode an ungrounded answer is replaced by the deterministic one, which only
+    states analytics results. `observe` records the finding and keeps the LLM answer.
+    """
+    mode = runtime.context.settings.AI_GROUNDING_MODE
+    if mode == "off":
+        GROUNDING_CHECKS.labels(result="skipped").inc()
+        return {"route": FINALIZE}
+
+    shown = (
+        state.get("prompt_context") or state.get("context", {}),
+        state.get("prompt_analytics") or state.get("analytics", {}).get("results", {}),
+        state.get("prompt_freshness") or state.get("freshness", {}),
+    )
+    result = check_grounding(state.get("answer") or {}, facts=shown, question=state["question"])
+    record = {"checked": result.checked, "ungrounded": list(result.ungrounded), "mode": mode}
+    if result.ok:
+        GROUNDING_CHECKS.labels(result="grounded").inc()
+        return {"grounding": record, "route": FINALIZE}
+
+    GROUNDING_CHECKS.labels(result="ungrounded").inc()
+    logger.warning(
+        "answer has numbers not in the facts request_id=%s mode=%s numbers=%s",
+        state.get("request_id"),
+        mode,
+        ",".join(result.ungrounded),
+    )
+    if mode == "observe":
+        return {"grounding": record, "route": FINALIZE}
+    return {
+        "grounding": record,
+        "route": FALLBACK,
+        "fallback_reason": FallbackReason.UNGROUNDED.value,
+        "llm_used": False,
+    }
+
+
+def route_after_ground(state: AssistantState) -> str:
     return FALLBACK if state.get("route") == FALLBACK else FINALIZE
 
 

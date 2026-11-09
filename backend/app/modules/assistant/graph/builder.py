@@ -1,10 +1,11 @@
 """
 LangGraph wiring for the read-only assistant.
 
-    START → classify → select_tools → call_tools → analyze → generate → finalize → END
+    START → classify → select_tools → call_tools → analyze → generate → ground → finalize → END
     select_tools → analyze            when the plan has no tools (blocked intents)
     analyze      → fallback           no data / blocked intent / no LLM configured
     generate     → fallback           LLM error or unparseable output
+    ground       → fallback           answer contains numbers that are not in the facts
     fallback     → finalize
 
 Compiled once per process; per-request dependencies arrive via
@@ -29,6 +30,7 @@ def build_assistant_graph() -> CompiledStateGraph:
     graph.add_node(nodes.CALL_TOOLS, nodes.call_tools)
     graph.add_node(nodes.ANALYZE, nodes.analyze)
     graph.add_node(nodes.GENERATE, nodes.generate)
+    graph.add_node(nodes.GROUND, nodes.ground)
     graph.add_node(nodes.FALLBACK, nodes.fallback)
     graph.add_node(nodes.FINALIZE, nodes.finalize)
 
@@ -48,6 +50,11 @@ def build_assistant_graph() -> CompiledStateGraph:
     graph.add_conditional_edges(
         nodes.GENERATE,
         nodes.route_after_generate,
+        {nodes.FALLBACK: nodes.FALLBACK, nodes.GROUND: nodes.GROUND},
+    )
+    graph.add_conditional_edges(
+        nodes.GROUND,
+        nodes.route_after_ground,
         {nodes.FALLBACK: nodes.FALLBACK, nodes.FINALIZE: nodes.FINALIZE},
     )
     graph.add_edge(nodes.FALLBACK, nodes.FINALIZE)
