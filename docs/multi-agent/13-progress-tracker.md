@@ -1,18 +1,18 @@
 # 13 — Progress Tracker
 
 Single place to see what is done, what is in progress and what is next. Update it at the end of each piece of work.
-Plan and rationale: [11-roadmap-suggestions.md](./11-roadmap-suggestions.md). Phase 0 details: [12-phase0-implementation.md](./12-phase0-implementation.md).
+Plan and rationale: [11-roadmap-suggestions.md](./11-roadmap-suggestions.md). Phase 0 details: [12-phase0-implementation.md](./12-phase0-implementation.md). Phase 1 details: [14-phase1-implementation.md](./14-phase1-implementation.md).
 
 Legend: ✅ done · 🟡 partly done · ⬜ not started
 
-_Last updated: 2026-11-09_
+_Last updated: 2026-11-11_
 
 ## 1. Overview
 
 | Phase | Goal | Status | Progress |
 |---|---|---|---|
 | 0 | Production hardening | ✅ Done | 9 / 9 items |
-| 1 | Supervisor + first specialist agents | ⬜ Not started | 0 / 6 |
+| 1 | Supervisor + first specialist agents | 🟡 Done except the `actions/` relocation | 5 / 6 |
 | 2 | Guardrails and platform in Python | ⬜ Not started | 0 / 5 |
 | 3 | Planning agents (forecast, optimizer, bill & tariff) | ⬜ Not started | 0 / 4 |
 | 4 | Automation and ambient agents | ⬜ Not started | 0 / 5 |
@@ -21,13 +21,13 @@ _Last updated: 2026-11-09_
 Stack decision (2026-11-09): everything in **Python / FastAPI / LangGraph**. Go is a future option only, triggered by measurements
 ([11 §3](./11-roadmap-suggestions.md)).
 
-Test status: **307 tests pass** with Postgres and Redis available. **297 pass and 10 skip** without them. Static check (unused or undefined names): clean.
+Test status: **474 tests pass** with Postgres and Redis available. **462 pass and 12 skip** without them. Static check (unused or undefined names): clean. Trajectory evals: **42 / 42 cases** (56 turns).
 
 ---
 
 ## 2. Phase 0 — Production hardening ✅
 
-Completed 2026-11-09. Nothing is committed to git yet.
+Completed 2026-11-09. Committed in `8b72e13`.
 
 | # | Functionality delivered | Key files | Verified by |
 |---|---|---|---|
@@ -56,25 +56,47 @@ Completed 2026-11-09. Nothing is committed to git yet.
 | 🟡 Rotate the password that is still in git history | You | Now |
 | 🟡 Choose and enable a real embedding model, add its key, run `reembed` | You | Now |
 | 🟡 Run the new CI workflow once on GitHub and fix anything that differs from local | You | Now |
-| ⬜ Grounding failure falls back without a retry | Agent | Phase 1 |
+| ✅ Grounding failure falls back without a retry (done for v2 in Phase 1; v1 still has no retry) | Agent | Phase 1 |
 | ⬜ Device command is published before the DB commit (outbox needed) | Agent | Phase 4 |
 | ⬜ Simulator does not send `traceparent` | Agent | Phase 5 |
 | ⬜ Vector column is 256 wide; `hnsw.iterative_scan` not set; true BM25/RRF fusion | Agent | Phase 3 |
 
 ---
 
-## 3. Phase 1 — Supervisor + first specialists ⬜
+## 3. Phase 1 — Supervisor + first specialists 🟡
 
-Target: 3–4 weeks. Design: [02](./02-agent-catalog.md), [03](./03-langgraph-design.md).
+Done 2026-11-11, except the relocation noted in 1.4. Design: [02](./02-agent-catalog.md), [03](./03-langgraph-design.md). Details: [14](./14-phase1-implementation.md).
 
-| # | Item | Status | Depends on |
+| # | Functionality delivered | Key files | Verified by |
 |---|---|---|---|
-| 1.1 | Supervisor graph with `Send` fan-out, `join(defer=True)`, synthesizer, output gate | ⬜ | Phase 0 grounding and checkpointer |
-| 1.2 | Wrap today's assistant graph as the **Energy Insight** agent | ⬜ | 1.1 |
-| 1.3 | Wrap knowledge retrieval as the **Knowledge** agent | ⬜ | 1.1, retrieval from 0.8 |
-| 1.4 | Move `actions/` under the **Device Action** agent as an exclusive route | ⬜ | 1.1, lifecycle from 0.2 |
-| 1.5 | Trajectory evals and a multi-agent dataset; SSE streaming with status events | ⬜ | 0.7 |
-| 1.6 | Thread memory for follow-up questions, plus one regeneration when grounding fails | ⬜ | 0.1, 0.6 |
+| 1.1 | ✅ **Supervisor graph**: classify → plan → parallel dispatch with `Send` → `join(defer=True)` → one synthesizer → output gate → finalize. Per-agent deadlines and failure isolation; a whole-request deadline; per-turn state reset | `agents_platform/orchestration/` | 28 graph tests incl. a timed parallelism check; mutation checks on the reset and the output gate |
+| 1.2 | ✅ **Energy Insight agent**: the v1 tools, analytics, freshness and projection, returning facts. Never calls the model | `agents/energy_insight.py`, `agents/insight_engine.py` | Agent tests; v1/v2 parity over HTTP on 5 question types |
+| 1.3 | ✅ **Knowledge agent**: Phase 0 retrieval, passages as citations, deterministic "not in your documents" on a gap | `agents/knowledge.py` | Gap parity with v1; a compound question with a real uploaded manual |
+| 1.4 | 🟡 **Device Action agent** as an exclusive route over the unchanged `ActionService`: proposes, never sends. **`assistant/actions/` itself has not been moved** | `agents/device_action.py` | Propose → confirm → queued over HTTP; nothing published on ask; refused when control is off; mutation check on exclusivity |
+| 1.5 | ✅ **Trajectory evals** (42 cases, 56 turns: route, agents, node path, model calls) wired into CI. ✅ **SSE streaming** with `status` and `final` events. Tokens are not streamed (by design, see 14 §3.8) | `agents_platform/evals/`, `api/router.py`, `backend-ci.yml` | 55 eval tests; mutation checks drop the gate or break exclusivity and fail 29 and 8 cases |
+| 1.6 | ✅ **Thread memory** (follow-ups inherit the topic; server-issued, owner-checked conversation ids; retention sweep) and ✅ **one regeneration** when grounding fails | `memory.py`, `conversations.py`, `maintenance.py`, migration `202611110001` | Real Postgres: a follow-up works after a restart; retention deletes checkpoints; mutation check on the regeneration cap |
+
+### Extra work found while building
+
+| Item | Why |
+|---|---|
+| ✅ Shared v1/v2 logic extracted (`domain/finalize.py`, `graph/routing.py`, `fallback_note`) | One implementation of data-time stamping, stale-data caution, citations, confidence and routing. All 179 v1 assistant tests passed unchanged |
+| ✅ Streaming opens its own database scope | With this FastAPI version `get_db` commits and closes before a streamed body runs, so a proposal written during a stream would be lost |
+| ✅ A name-a-new-subject rule for follow-ups | "and the grid?" would otherwise silently continue the battery topic |
+| ✅ Document search uses the follow-up-aware question | Retrieval on a bare "why?" finds nothing |
+
+### Open follow-ups from Phase 1
+
+| Item | Owner | Planned in |
+|---|---|---|
+| ⬜ Move `assistant/actions/` under `agents_platform/agents/device_action/` | Agent | Phase 2, when v1 retires |
+| ⬜ Prove v2 at parity with a **real model** (L3 judge, same questions on both endpoints), then switch the frontend | Agent + You | Phase 2 |
+| ⬜ Grow the multi-agent dataset toward 80 compound cases | Agent | Phase 2 |
+| ⬜ Mixed "explain and do": explain first, then offer the action | Agent | Phase 2 |
+| ⬜ Serialise concurrent questions in one conversation | Agent | Phase 2 or 5 |
+| ⬜ Conversation history endpoint, partial results on the whole-request deadline | Agent | When the frontend needs them |
+| ⬜ Measure checkpoint write volume per question | Agent | Before Phase 5 |
+| 🟡 Run the CI workflow on GitHub once more (it now also runs the trajectory evals) | You | Now |
 
 ## 4. Phase 2 — Guardrails and platform in Python ⬜
 
@@ -133,6 +155,11 @@ Ongoing.
 | 2026-11-09 | Build everything in Python / FastAPI first; Go only if measurements demand it | Fewer moving parts. LLM latency dominates, so Go gains little on the chat path |
 | 2026-11-09 | Grounding falls back to the deterministic answer instead of retrying | Keeps Phase 0 small. Retry arrives with the supervisor in Phase 1 |
 | 2026-11-09 | JWT leeway of 10 s | Clock skew caused false `401`s, and multi-server skew is normal in production |
+| 2026-11-11 | Agents return facts and one synthesizer writes the answer, instead of each agent answering | A compound question costs 1 model call as in v1 (not 2–3), and the output gate, regeneration and fallback live in one place |
+| 2026-11-11 | New `agents_platform/` package and `/v2/assistant` routes; v1 stays live until parity is proven with a real model | Replacing v1 needs evidence, not a fake-model match. Doc 03 §12 already names this layout |
+| 2026-11-11 | Device Action is an adapter over the unchanged `ActionService`; the package move waits | Moving it while v1 imports it adds risk and no behaviour. The Phase 0 confirmation lifecycle stays exactly as tested |
+| 2026-11-11 | Memory keeps earlier questions, not answers; the server issues conversation ids | A follow-up is answered from live data, so an old number is never repeated as current. Ids cannot be invented or probed |
+| 2026-11-11 | No token streaming in Phase 1 | The answer is a structured object the output gate can replace; showing words then pulling them back is worse than progress events plus one checked answer |
 
 ## 9. How to update this file
 

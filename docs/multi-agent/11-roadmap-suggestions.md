@@ -25,7 +25,9 @@ Details, configuration and operations: [12-phase0-implementation.md](./12-phase0
 | Baseline metrics (ingest lag, msgs/s, CPU, WS count, memory) | ✅ Prometheus | Data to decide on any later optimisation |
 | JWT clock-skew leeway | ✅ added (found while testing) | Tokens were rejected as "issued in the future" when a clock stepped back |
 
-### Phase 1 — Supervisor + first specialists (3–4 weeks)
+### Phase 1 — Supervisor + first specialists 🟡 implemented (2026-11-11), except moving `actions/`
+
+Details, configuration and known limits: [14-phase1-implementation.md](./14-phase1-implementation.md).
 
 - Build `orchestration/` supervisor with `Send` fan-out, `join(defer=True)`, synthesizer, output gate.
 - Wrap today's assistant graph as **Energy Insight Agent** and knowledge retrieval as **Knowledge Agent**.

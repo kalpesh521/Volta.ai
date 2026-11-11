@@ -30,6 +30,11 @@ def get_knowledge_service(
     ai: AISettings = Depends(get_knowledge_settings),
     embedder: Embedder = Depends(get_embedder),
 ) -> KnowledgeService:
+    return build_knowledge_service(db, ai, embedder)
+
+
+def build_knowledge_service(db: AsyncSession, ai: AISettings, embedder: Embedder) -> KnowledgeService:
+    """The service for an explicit session, for callers that own their own database scope (streaming)."""
     return KnowledgeService(
         KnowledgeRepository(db),
         embedder,

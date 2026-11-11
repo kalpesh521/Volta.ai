@@ -251,13 +251,25 @@ def _document_answer(ctx: AIContext) -> AnswerDraft | None:
     )
 
 
+def fallback_note(reason: FallbackReason) -> str:
+    """The sentence appended to a deterministic answer to say why the AI wording was not used."""
+    return _FALLBACK_NOTES.get(reason, "")
+
+
 def compose_fallback_answer(
     *,
     reason: FallbackReason,
     intents: list[Intent],
     context: AIContext,
     analytics: AnalyticsBundle,
+    note: str | None = None,
 ) -> AnswerDraft:
+    """
+    Deterministic answer from facts and analytics only.
+
+    `note` overrides the reason's default trailing sentence; pass "" for a note-free draft that
+    the caller annotates later.
+    """
     if reason is FallbackReason.DEVICE_CONTROL:
         return AnswerDraft(
             observation="You asked me to change a device, but I cannot control devices yet.",
@@ -286,7 +298,7 @@ def compose_fallback_answer(
         return _knowledge_gap_answer(context)
 
     primary = intents[0] if intents else Intent.LIVE_OVERVIEW
-    note = _FALLBACK_NOTES.get(reason, "")
+    note = fallback_note(reason) if note is None else note
 
     if primary is Intent.HOME_PROFILE:
         profile = _home_profile_answer(context)

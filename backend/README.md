@@ -28,7 +28,8 @@ backend/
       auth/               vertical slice: router, service, repos, oauth, schemas
       onboarding/         vertical slice: router, service, repo, models, schemas
       energy/             live / daily / hourly telemetry reads
-      assistant/          AI assistant: domain, prompts, tools, LangGraph graph, API
+      assistant/          AI assistant (v1): domain, prompts, tools, LangGraph graph, actions, API
+    agents_platform/      multi-agent assistant (v2): supervisor, specialist agents, conversations, evals, API
   tests/                  pytest suite (outside the app package)
   alembic/                migrations
 ```
@@ -253,8 +254,16 @@ Postgres in production and SQLite in tests. Google OAuth tests use a fake
 | GET    | `/assistant/status`           | Bearer JWT  | AI mode (`llm` / `deterministic`) and configured models |
 | POST   | `/assistant/me/ask`           | Bearer JWT  | read-only energy Q&A for the primary home; rate-limited |
 | POST   | `/assistant/{id}/ask`         | Bearer JWT  | same, for a home the caller owns |
+| POST   | `/v2/assistant/me/ask`        | Bearer JWT  | supervisor + specialist agents, conversation memory (`conversation_id`); a device action returns a `proposal` |
+| POST   | `/v2/assistant/me/ask/stream` | Bearer JWT  | same, as server-sent events (`status`, then `final`) |
+| POST   | `/v2/assistant/{id}/ask[/stream]` | Bearer JWT | same, for a home the caller owns |
 
 ### AI assistant
+
+`/v2/assistant/...` runs a supervisor over Energy Insight, Knowledge and Device Action agents, with follow-up memory,
+one regeneration when an answer's numbers are not in the facts, and streaming progress. `/assistant/...` (v1) stays live.
+Design and operation: [docs/multi-agent/14-phase1-implementation.md](../docs/multi-agent/14-phase1-implementation.md).
+Trajectory evals: `python -m app.agents_platform.evals`.
 
 Set one provider key in `.env`. OpenRouter: `AI_LLM_PROVIDER=openrouter`,
 `AI_LLM_MODEL=openai/gpt-4o-mini` (any OpenRouter model id), `OPENROUTER_API_KEY=...`.

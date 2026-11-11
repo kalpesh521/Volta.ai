@@ -24,6 +24,7 @@ Target architecture for moving Suryaa from one assistant graph to a production, 
 | 11 | [Roadmap & suggestions](./11-roadmap-suggestions.md) | Phased plan from today's code, plus new agent ideas |
 | 12 | [Phase 0 implementation](./12-phase0-implementation.md) | What was built in Phase 0, how to configure and operate it, known limits |
 | 13 | [Progress tracker](./13-progress-tracker.md) | Status of every phase and item, what each delivered, open follow-ups, decision log |
+| 14 | [Phase 1 implementation](./14-phase1-implementation.md) | The supervisor, three agents, thread memory, regeneration, streaming and trajectory evals: how they work, configure and operate, known limits |
 
 ## The five rules that run through every document
 

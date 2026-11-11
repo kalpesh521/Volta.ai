@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import replace
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -17,7 +16,6 @@ from langgraph.runtime import Runtime
 
 from app.ai.config import LLMRole
 from app.ai.errors import LLMInvocationError, LLMNotConfiguredError
-from app.ai.llm.gateway import StructuredResult
 from app.core.metrics import GROUNDING_CHECKS
 from app.modules.assistant.domain.analytics import Analytic, AnalyticsBundle, Severity, run_analytics
 from app.modules.assistant.domain.answers import AnswerDraft, FallbackReason, compose_fallback_answer
@@ -25,22 +23,17 @@ from app.modules.assistant.domain.context import AIContext, fit_to_budget
 from app.modules.assistant.domain.freshness import DataFreshness, FreshnessStatus, assess_freshness
 from app.modules.assistant.domain.grounding import check_grounding
 from app.modules.assistant.domain.projection import Detail, project_prompt
-from app.modules.assistant.domain.intents import (
-    ApplianceType,
-    ClassificationMethod,
-    Intent,
-    IntentClassification,
-    classify_by_rules,
-    from_llm,
-)
+from app.modules.assistant.domain.finalize import assess_confidence, finalize_answer
+from app.modules.assistant.domain.intents import ApplianceType, Intent
 from app.modules.assistant.graph.planner import build_plan
+from app.modules.assistant.graph.routing import route_question
 from app.modules.assistant.graph.state import (
     AssistantRuntime,
     AssistantState,
-    LLMCallRecord,
     ToolCallRecord,
+    llm_record,
 )
-from app.modules.assistant.prompts import answer_messages, router_messages
+from app.modules.assistant.prompts import answer_messages
 from app.modules.assistant.tools.registry import ToolName, is_available, unavailable
 
 logger = logging.getLogger("volta.assistant.graph")
@@ -72,19 +65,6 @@ _BLOCKED: dict[Intent, FallbackReason] = {
     Intent.OUT_OF_SCOPE: FallbackReason.OUT_OF_SCOPE,
 }
 
-_STALE_PREFIX = "Because this data is not current, confirm the live readings before acting. "
-
-
-def _llm_record(role: LLMRole, result: StructuredResult[Any]) -> LLMCallRecord:
-    return LLMCallRecord(
-        role=role.value,
-        model=result.model,
-        latency_ms=result.latency_ms,
-        input_tokens=result.usage.input_tokens,
-        output_tokens=result.usage.output_tokens,
-        total_tokens=result.usage.total_tokens,
-    )
-
 
 def _primary_intent(state: AssistantState) -> Intent:
     intents = state.get("intents") or [Intent.LIVE_OVERVIEW.value]
@@ -95,24 +75,13 @@ async def classify(
     state: AssistantState, config: RunnableConfig, runtime: Runtime[AssistantRuntime]
 ) -> dict[str, Any]:
     """Router cascade: rules first, router LLM only when rules are not confident."""
-    question = state["question"]
-    match = classify_by_rules(question)
+    outcome = await route_question(state["question"], llm=runtime.context.llm, config=config)
     update: dict[str, Any] = {}
-    if not match.confident:
-        llm = runtime.context.llm
-        if llm.is_available(LLMRole.ROUTER):
-            try:
-                result = await llm.ainvoke(
-                    LLMRole.ROUTER, IntentClassification, router_messages(question), config=config
-                )
-                match = from_llm(result.output, match.appliance)
-                update["llm_calls"] = [_llm_record(LLMRole.ROUTER, result)]
-            except LLMInvocationError as exc:
-                logger.warning("router LLM failed, using rules: %s", exc)
-                update["errors"] = [str(exc)]
-                match = replace(match, method=ClassificationMethod.DEFAULT)
-        else:
-            match = replace(match, method=ClassificationMethod.DEFAULT)
+    if outcome.llm_calls:
+        update["llm_calls"] = outcome.llm_calls
+    if outcome.errors:
+        update["errors"] = outcome.errors
+    match = outcome.match
     return {
         **update,
         "intents": [intent.value for intent in match.intents],
@@ -278,7 +247,7 @@ async def generate(
     return {
         "answer": result.output.model_dump(),
         "llm_used": True,
-        "llm_calls": [_llm_record(LLMRole.ANSWER, result)],
+        "llm_calls": [llm_record(LLMRole.ANSWER, result)],
         "route": GROUND,
     }
 
@@ -342,53 +311,20 @@ def fallback(state: AssistantState) -> dict[str, Any]:
     return {"answer": draft.model_dump(), "llm_used": False}
 
 
-def _confidence(state: AssistantState, freshness: DataFreshness) -> str:
-    reason = state.get("fallback_reason")
-    if reason in (
-        FallbackReason.DEVICE_CONTROL.value,
-        FallbackReason.OUT_OF_SCOPE.value,
-        FallbackReason.KNOWLEDGE_GAP.value,
-    ):
-        return "high"
-    if freshness.status is not FreshnessStatus.FRESH:
-        if state.get("requires_telemetry", True):
-            return "low"
-        # Setup answers come from onboarding; only the live part is uncertain.
-        if state.get("live_advice", True):
-            return "medium"
-    anomalies = state.get("analytics", {}).get("results", {}).get("anomalies", [])
-    data_issue = any(
-        a.get("code") in {"data_quality_degraded", "energy_balance_mismatch"} for a in anomalies
-    )
-    tool_issue = any(c["status"] in ("timeout", "error") for c in state.get("tool_calls", []))
-    return "medium" if data_issue or tool_issue else "high"
-
-
 def finalize(state: AssistantState) -> dict[str, Any]:
     """Guardrails the LLM cannot override: data time, stale-data caution, confidence."""
     freshness = DataFreshness.model_validate(state["freshness"])
-    answer = dict(state.get("answer") or {})
-    if freshness.status is FreshnessStatus.STALE and state.get("live_advice", True):
-        recommendation = answer.get("recommendation", "")
-        if not recommendation.startswith(_STALE_PREFIX):
-            answer["recommendation"] = _STALE_PREFIX + recommendation
-    answer["data_time"] = (
-        freshness.data_time.isoformat() if freshness.data_time else "unavailable"
-    )
-    _append_citations(answer, state)
-    return {"answer": answer, "confidence": _confidence(state, freshness)}
-
-
-def _append_citations(answer: dict[str, Any], state: AssistantState) -> None:
+    live_advice = state.get("live_advice", True)
     passages = ((state.get("context") or {}).get("knowledge") or {}).get("passages") or []
-    if not passages:
-        return
-    labels = []
-    for passage in passages[:3]:
-        page = passage.get("page")
-        title = passage.get("title") or "document"
-        labels.append(f"{title} p.{page}" if page else title)
-    suffix = " Sources: " + "; ".join(labels) + "."
-    explanation = answer.get("explanation") or ""
-    if "Sources:" not in explanation:
-        answer["explanation"] = explanation.rstrip() + suffix
+    answer = finalize_answer(
+        state.get("answer") or {}, freshness=freshness, live_advice=live_advice, passages=passages
+    )
+    confidence = assess_confidence(
+        fallback_reason=state.get("fallback_reason"),
+        freshness=freshness,
+        requires_telemetry=state.get("requires_telemetry", True),
+        live_advice=live_advice,
+        anomalies=state.get("analytics", {}).get("results", {}).get("anomalies", []),
+        tool_statuses=[c["status"] for c in state.get("tool_calls", [])],
+    )
+    return {"answer": answer, "confidence": confidence}

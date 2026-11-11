@@ -22,3 +22,5 @@ from app.modules.knowledge.models import BillExtraction  # noqa: F401
 from app.modules.knowledge.models import KnowledgeChunk  # noqa: F401
 from app.modules.knowledge.models import KnowledgeDocument  # noqa: F401
 from app.modules.knowledge.models import KnowledgeReview  # noqa: F401
+
+from app.agents_platform.conversations import AssistantConversation  # noqa: F401

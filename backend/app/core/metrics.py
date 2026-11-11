@@ -67,6 +67,27 @@ GROUNDING_CHECKS = Counter(
     "Numeric grounding checks on LLM answers.",
     ["result"],  # grounded | ungrounded | skipped
 )
+AGENT_RUNS = Counter(
+    "volta_agent_runs_total",
+    "Specialist agent runs inside the supervisor.",
+    ["agent", "status"],  # status: ok | partial | refused | error | timeout
+)
+AGENT_SECONDS = Histogram(
+    "volta_agent_latency_seconds",
+    "Time a specialist agent took to return its result.",
+    ["agent"],
+    buckets=_LATENCY_BUCKETS,
+)
+SUPERVISOR_REQUESTS = Counter(
+    "volta_supervisor_requests_total",
+    "Supervisor questions answered.",
+    ["route", "path"],  # route: single | multi | exclusive | refusal; path: llm | deterministic
+)
+SUPERVISOR_REGENERATIONS = Counter(
+    "volta_supervisor_regenerations_total",
+    "Answers regenerated once after failing the numeric grounding check.",
+    ["outcome"],  # recovered | fell_back
+)
 ACTION_PROPOSALS = Counter(
     "volta_action_proposals_total",
     "Device action proposals by resulting status.",

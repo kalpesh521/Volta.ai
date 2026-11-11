@@ -10,6 +10,7 @@ field guidance lives in the `AnswerDraft` schema descriptions, not here.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.messages import BaseMessage
@@ -97,7 +98,12 @@ Detected intents: {intents}
 
 <data_freshness>
 {freshness}
-</data_freshness>"""
+</data_freshness>{corrections}"""
+
+_CORRECTIONS = """
+
+Correction needed: your previous answer contained numbers that do not appear in the facts: {numbers}.
+Rewrite it using only values present in <facts>, <analytics> and <data_freshness>. Remove any number you cannot find there."""
 
 ROUTER_PROMPT = ChatPromptTemplate.from_messages(
     [("system", _ROUTER_SYSTEM), ("human", "Question: {question}")]
@@ -141,9 +147,13 @@ def answer_messages(
     facts: dict[str, Any],
     analytics: dict[str, Any],
     freshness: dict[str, Any],
+    ungrounded_numbers: Sequence[str] = (),
 ) -> list[BaseMessage]:
+    """The answer prompt. Pass `ungrounded_numbers` to ask for one corrected regeneration."""
     facts_json = compact_json(facts)
+    corrections = _CORRECTIONS.format(numbers=", ".join(ungrounded_numbers)) if ungrounded_numbers else ""
     return ANSWER_PROMPT.format_messages(
+        corrections=corrections,
         guidance=answer_guidance(intents, facts_json),
         question=question,
         intents=", ".join(intents),

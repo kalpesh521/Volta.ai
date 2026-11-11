@@ -16,8 +16,8 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.tools import BaseTool
 
-from app.ai.config import AISettings
-from app.ai.llm.gateway import StructuredLLM
+from app.ai.config import AISettings, LLMRole
+from app.ai.llm.gateway import StructuredLLM, StructuredResult
 from app.modules.assistant.tools.registry import ToolName
 
 Route = Literal["generate", "ground", "fallback", "finalize"]
@@ -36,6 +36,17 @@ class LLMCallRecord(TypedDict):
     input_tokens: int
     output_tokens: int
     total_tokens: int
+
+
+def llm_record(role: LLMRole, result: StructuredResult[Any]) -> LLMCallRecord:
+    return LLMCallRecord(
+        role=role.value,
+        model=result.model,
+        latency_ms=result.latency_ms,
+        input_tokens=result.usage.input_tokens,
+        output_tokens=result.usage.output_tokens,
+        total_tokens=result.usage.total_tokens,
+    )
 
 
 class AssistantState(TypedDict, total=False):

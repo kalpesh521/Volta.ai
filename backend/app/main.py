@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 
+from app.agents_platform.api.router import router as supervisor_router
 from app.ai.checkpointer import checkpointer_provider
 from app.ai.config import ai_settings
 from app.ai.observability import configure_tracing
@@ -107,9 +108,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    from app.agents_platform.api.deps import get_supervisor_graph
     from app.modules.assistant.actions.deps import get_action_graph
 
     get_action_graph.cache_clear()
+    get_supervisor_graph.cache_clear()
     await checkpointer_provider.stop()
     shutdown_telemetry()
 
@@ -155,6 +158,7 @@ app.include_router(energy_ws_router)    # /ws/energy
 app.include_router(notification_ws_router)  # /ws/notifications
 app.include_router(assistant_router)    # /assistant/*  read-only AI assistant
 app.include_router(action_router)       # /assistant/actions/*  confirm before any command
+app.include_router(supervisor_router)   # /v2/assistant/*  supervisor + specialist agents, conversation memory
 app.include_router(home_ops_router)     # recommendations, alerts, automation rules
 app.include_router(knowledge_router)    # /knowledge/*  admin and user documents
 app.include_router(webui_router)        # /ui  temporary energy HTML (not production)

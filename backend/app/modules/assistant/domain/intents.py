@@ -35,6 +35,7 @@ class Intent(StrEnum):
 class ClassificationMethod(StrEnum):
     RULES = "rules"
     LLM = "llm"
+    MEMORY = "memory"  # a short follow-up that inherits the previous turn's intents
     DEFAULT = "default"
 
 

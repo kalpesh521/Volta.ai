@@ -208,13 +208,14 @@ services:
           memory: 512m
 
   action-maintenance:
-    # Hourly housekeeping: expire unanswered device-action proposals and prune old checkpoints.
+    # Hourly housekeeping: expire unanswered device-action proposals, prune old action checkpoints,
+    # and delete chat conversations idle past AI_CONVERSATION_RETENTION_DAYS with their memory.
     # Must run at least once per ACTION_CHECKPOINT_RETENTION_HOURS (default 24).
     <<: *backend
     command:
       - sh
       - -c
-      - "while true; do python -m app.modules.assistant.actions.maintenance || true; sleep 3600; done"
+      - "while true; do python -m app.modules.assistant.actions.maintenance || true; python -m app.agents_platform.maintenance || true; sleep 3600; done"
     healthcheck:
       disable: true
     depends_on:

@@ -96,6 +96,21 @@ class AISettings(BaseSettings):
     AI_CHECKPOINT_POOL_MIN: int = 1
     AI_CHECKPOINT_POOL_MAX: int = 10
 
+    # --- Supervisor (v2 multi-agent chat) ---
+    # Whole-request ceiling. The LLM call alone may take up to AI_LLM_TIMEOUT_SECONDS.
+    AI_SUPERVISOR_DEADLINE_SECONDS: float = 30.0
+    # Per-agent ceilings. A slow agent becomes a `timeout` result and never blocks its siblings.
+    # Keep each above AI_TOOL_TIMEOUT_SECONDS: the agent waits on tools that run in parallel.
+    AI_ENERGY_AGENT_DEADLINE_SECONDS: float = 8.0
+    AI_KNOWLEDGE_AGENT_DEADLINE_SECONDS: float = 10.0
+    AI_DEVICE_ACTION_AGENT_DEADLINE_SECONDS: float = 8.0
+    # Answer generations per question: 2 means one regeneration when grounding fails.
+    AI_ANSWER_MAX_ATTEMPTS: int = 2
+    # Earlier turns used to resolve a follow-up. Older turns stay in the thread but are not read.
+    AI_MEMORY_WINDOW_TURNS: int = 4
+    # Conversations idle longer than this are deleted together with their checkpoints.
+    AI_CONVERSATION_RETENTION_DAYS: int = 30
+
     LANGSMITH_TRACING: bool = False
     LANGSMITH_API_KEY: SecretStr | None = None
     LANGSMITH_PROJECT: str = "suryaa-assistant"
