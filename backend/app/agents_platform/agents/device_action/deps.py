@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.checkpointer import checkpointer_provider
 from app.core.database import get_db
-from app.modules.assistant.actions.graph import build_action_graph
-from app.modules.assistant.actions.publisher import CommandPublisher, default_publisher
-from app.modules.assistant.actions.service import ActionService
+from app.agents_platform.agents.device_action.graph import build_action_graph
+from app.agents_platform.agents.device_action.publisher import CommandPublisher, default_publisher
+from app.agents_platform.agents.device_action.service import ActionService
 from app.modules.energy.deps import get_energy_service
 from app.modules.energy.service import EnergyService
 

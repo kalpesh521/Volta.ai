@@ -39,12 +39,14 @@ class FallbackReason(StrEnum):
     LLM_UNAVAILABLE = "llm_unavailable"
     LLM_ERROR = "llm_error"
     UNGROUNDED = "ungrounded_numbers"
+    POLICY = "policy_violation"
 
 
 _FALLBACK_NOTES: dict[FallbackReason, str] = {
     FallbackReason.LLM_UNAVAILABLE: " (Summary generated without the AI model.)",
     FallbackReason.LLM_ERROR: " (Summary generated without the AI model.)",
     FallbackReason.UNGROUNDED: " (Verified summary shown: the AI wording contained numbers that are not in your data.)",
+    FallbackReason.POLICY: " (Verified summary shown: the AI wording was withheld by a safety check.)",
 }
 
 

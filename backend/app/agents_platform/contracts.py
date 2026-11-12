@@ -39,6 +39,7 @@ class AgentStatus(StrEnum):
     REFUSED = "refused"  # the request is outside what this agent may do
     ERROR = "error"
     TIMEOUT = "timeout"
+    DISABLED = "disabled"  # switched off by a feature flag: not run, not an error
 
     @property
     def usable(self) -> bool:

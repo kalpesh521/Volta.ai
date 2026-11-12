@@ -25,6 +25,7 @@ Target architecture for moving Suryaa from one assistant graph to a production, 
 | 12 | [Phase 0 implementation](./12-phase0-implementation.md) | What was built in Phase 0, how to configure and operate it, known limits |
 | 13 | [Progress tracker](./13-progress-tracker.md) | Status of every phase and item, what each delivered, open follow-ups, decision log |
 | 14 | [Phase 1 implementation](./14-phase1-implementation.md) | The supervisor, three agents, thread memory, regeneration, streaming and trajectory evals: how they work, configure and operate, known limits |
+| 15 | [Phase 2 implementation](./15-phase2-implementation.md) | Input guard, PII masking and vault, token budgets, policy checks, kill switches and the prompt and model registry; plus the Phase 1 wrap-up (the `actions/` move, conversation lock, real-model parity with a capped spend) |
 
 ## The five rules that run through every document
 

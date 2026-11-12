@@ -14,9 +14,9 @@ from app.ai.config import ai_settings
 from app.core.deps import get_current_user
 from app.core.rate_limit import limiter
 from app.models.user import User
-from app.modules.assistant.actions.deps import get_action_service
-from app.modules.assistant.actions.schemas import ActionResponse, ConfirmActionRequest, ProposeActionRequest
-from app.modules.assistant.actions.service import ActionService
+from app.agents_platform.agents.device_action.deps import get_action_service
+from app.agents_platform.agents.device_action.schemas import ActionResponse, ConfirmActionRequest, ProposeActionRequest
+from app.agents_platform.agents.device_action.service import ActionService
 from app.modules.energy.access import require_my_completed_system
 from app.modules.onboarding.models import SolarSystem
 

@@ -7,8 +7,8 @@ integration tests were run against real Postgres 16 + pgvector and Redis.
 
 | # | Item | Where | One-line behaviour |
 |---|---|---|---|
-| 1 | Durable checkpoints | [checkpointer.py](../../backend/app/ai/checkpointer.py), [actions/](../../backend/app/modules/assistant/actions/) | Pending device confirmations live in Postgres (own schema + pool) and survive restarts and replicas |
-| 2 | Confirmation lifecycle | [service.py](../../backend/app/modules/assistant/actions/service.py), [maintenance.py](../../backend/app/modules/assistant/actions/maintenance.py) | 2-minute deadline, atomic single-use claim, replay refused even if the DB row rolled back, sweep expires and prunes |
+| 1 | Durable checkpoints | [checkpointer.py](../../backend/app/ai/checkpointer.py), [actions/](../../backend/app/agents_platform/agents/device_action/) | Pending device confirmations live in Postgres (own schema + pool) and survive restarts and replicas |
+| 2 | Confirmation lifecycle | [service.py](../../backend/app/agents_platform/agents/device_action/service.py), [maintenance.py](../../backend/app/agents_platform/agents/device_action/maintenance.py) | 2-minute deadline, atomic single-use claim, replay refused even if the DB row rolled back, sweep expires and prunes |
 | 3 | Rate limiting | [rate_limit.py](../../backend/app/core/rate_limit.py) | Redis-shared counters, per user (token) else per IP, falls back to in-process if Redis is down |
 | 4 | Observability | [request_context.py](../../backend/app/core/request_context.py), [logging_config.py](../../backend/app/core/logging_config.py), [telemetry.py](../../backend/app/core/telemetry.py), [metrics.py](../../backend/app/core/metrics.py) | `X-Request-ID` on every request and log line; OTLP traces; `traceparent` across RabbitMQ; Prometheus metrics |
 | 5 | Numeric grounding | [grounding.py](../../backend/app/modules/assistant/domain/grounding.py), `ground` node | Every number in an LLM answer must trace to the facts, else the deterministic answer replaces it |
@@ -51,7 +51,7 @@ All keys are in [backend/.env.example](../../backend/.env.example).
 | Task | Command |
 |---|---|
 | Create checkpoint tables (once per deployment, run by the compose `migrate` job) | `python -m app.ai.checkpointer setup` |
-| Expire unanswered proposals, prune old checkpoints (compose runs it hourly) | `python -m app.modules.assistant.actions.maintenance` |
+| Expire unanswered proposals, prune old checkpoints (compose runs it hourly) | `python -m app.agents_platform.agents.device_action.maintenance` |
 | Re-embed after changing the embedder | `python -m app.modules.knowledge.reembed` |
 | Run routing evals | `python -m app.modules.assistant.evals --report out.json` |
 | Run the opt-in integration tests | `TEST_POSTGRES_URL=postgresql+asyncpg://… TEST_REDIS_URL=redis://…/15 pytest` |

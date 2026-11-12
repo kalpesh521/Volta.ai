@@ -29,7 +29,7 @@ backend/
       onboarding/         vertical slice: router, service, repo, models, schemas
       energy/             live / daily / hourly telemetry reads
       assistant/          AI assistant (v1): domain, prompts, tools, LangGraph graph, actions, API
-    agents_platform/      multi-agent assistant (v2): supervisor, specialist agents, conversations, evals, API
+    agents_platform/      multi-agent assistant (v2): supervisor, specialist agents (agents/device_action is the confirm-before-act workflow), guardrails, budgets, registry, conversations, evals, API
   tests/                  pytest suite (outside the app package)
   alembic/                migrations
 ```
@@ -262,8 +262,13 @@ Postgres in production and SQLite in tests. Google OAuth tests use a fake
 
 `/v2/assistant/...` runs a supervisor over Energy Insight, Knowledge and Device Action agents, with follow-up memory,
 one regeneration when an answer's numbers are not in the facts, and streaming progress. `/assistant/...` (v1) stays live.
-Design and operation: [docs/multi-agent/14-phase1-implementation.md](../docs/multi-agent/14-phase1-implementation.md).
-Trajectory evals: `python -m app.agents_platform.evals`.
+Design and operation: [docs/multi-agent/14-phase1-implementation.md](../docs/multi-agent/14-phase1-implementation.md) and
+[15-phase2-implementation.md](../docs/multi-agent/15-phase2-implementation.md). v2 also has an input guard (prompt-injection score,
+personal-data masking), per-user daily token budgets by plan tier, per-agent kill switches and a prompt registry; v1 has none of these.
+Trajectory evals: `python -m app.agents_platform.evals`. Real-model v1/v2 parity with a hard cap on model calls:
+`python -m app.agents_platform.evals.parity --help`.
+
+Operators (Suryaa admins): `GET /v2/assistant/admin/platform`, `PUT|DELETE /v2/assistant/admin/flags/{flag}` (kill switches, no deploy).
 
 Set one provider key in `.env`. OpenRouter: `AI_LLM_PROVIDER=openrouter`,
 `AI_LLM_MODEL=openai/gpt-4o-mini` (any OpenRouter model id), `OPENROUTER_API_KEY=...`.

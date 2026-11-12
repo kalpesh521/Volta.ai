@@ -23,7 +23,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.logging_config import configure_logging
 from app.core.metrics import start_worker_metrics_server
 from app.core.telemetry import configure_telemetry, consumer_span, shutdown_telemetry
-from app.modules.assistant.actions.execution import record_virtual_result
+from app.agents_platform.agents.device_action.execution import record_virtual_result
 
 logger = logging.getLogger("volta.device_commands")
 

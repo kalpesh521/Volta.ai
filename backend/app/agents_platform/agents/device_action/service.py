@@ -13,12 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import AppError, ForbiddenError
 from app.core.metrics import ACTION_PROPOSALS
-from app.modules.assistant.actions.graph import ActionRuntime
-from app.modules.assistant.actions.models import ActionAuditEvent, ActionProposal, DeviceOverride
+from app.agents_platform.agents.device_action.graph import ActionRuntime
+from app.agents_platform.agents.device_action.models import ActionAuditEvent, ActionProposal, DeviceOverride
 from app.modules.assistant.notifications.deliver import save_notification
-from app.modules.assistant.actions.publisher import CommandPublisher
-from app.modules.assistant.actions.safety import explain
-from app.modules.assistant.actions.schemas import ActionResponse
+from app.agents_platform.agents.device_action.publisher import CommandPublisher
+from app.agents_platform.agents.device_action.safety import explain
+from app.agents_platform.agents.device_action.schemas import ActionResponse
 from app.modules.energy.service import EnergyService
 from app.modules.onboarding.models import SolarSystem
 from langgraph.graph.state import CompiledStateGraph

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
-from app.modules.assistant.actions.models import HomeNotification
+from app.agents_platform.agents.device_action.models import HomeNotification
 from app.modules.assistant.domain.alerts import priority_for
 from app.modules.assistant.notifications.bus import publish
 from app.modules.assistant.notifications.cache import notification_cache

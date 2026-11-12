@@ -21,6 +21,7 @@ from app.agents_platform.contracts import (
     AgentStatus,
     AnswerParts,
 )
+from app.agents_platform.guardrails.classifier import InjectionVerdict
 from app.ai.config import LLMRole
 from app.ai.errors import LLMInvocationError
 from app.ai.llm.gateway import StructuredResult, TokenUsage
@@ -48,9 +49,11 @@ class ScriptedLLM:
         answers: Sequence[AnswerDraft | Exception] = (CLEAN_DRAFT,),
         *,
         classification: IntentClassification | None = None,
+        verdict: InjectionVerdict | Exception | None = None,
         available: bool = True,
     ) -> None:
         self._answers = list(answers)
+        self._verdict = verdict or InjectionVerdict(is_injection=False)
         self._classification = classification or IntentClassification(primary_intent=Intent.OUT_OF_SCOPE)
         self._available = available
         self.calls: list[tuple[LLMRole, list[BaseMessage]]] = []
@@ -69,6 +72,10 @@ class ScriptedLLM:
     ) -> StructuredResult:
         self.calls.append((role, list(messages)))
         usage = TokenUsage(input_tokens=100, output_tokens=50, total_tokens=150)
+        if schema is InjectionVerdict:
+            if isinstance(self._verdict, Exception):
+                raise self._verdict
+            return StructuredResult(output=self._verdict, model="stub-guard", usage=usage, latency_ms=1)
         if schema is IntentClassification:
             return StructuredResult(output=self._classification, model="stub-router", usage=usage, latency_ms=1)
         index = min(self.count(LLMRole.ANSWER) - 1, len(self._answers) - 1)

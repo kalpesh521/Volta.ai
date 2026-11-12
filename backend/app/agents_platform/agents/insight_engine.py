@@ -76,16 +76,16 @@ def insight_graph() -> CompiledStateGraph:
     return _INSIGHT_GRAPH
 
 
-ToolsFor = Callable[[str], Mapping[ToolName, BaseTool]]
+ToolsFor = Callable[[AgentName, str], Mapping[ToolName, BaseTool]]
 
 
 class InsightEngine:
     """
     Request-scoped: tools are bound to one household, so an engine is never shared across requests.
 
-    `tools_for(question)` builds the tool set for one agent call. The question is a parameter because
-    document search runs on the question as the supervisor resolved it (a follow-up carries the
-    question it follows), not on the raw text the user typed.
+    `tools_for(agent, question)` builds the tool set for one agent call, limited to the tools that agent may use
+    (gate G5, `guardrails/policy.py`). The question is a parameter because document search runs on the question
+    as the supervisor resolved it (a follow-up carries the question it follows), not on the raw text the user typed.
     """
 
     def __init__(
@@ -112,7 +112,7 @@ class InsightEngine:
             "classification_method": "supervisor",
         }
         runtime = AssistantRuntime(
-            tools=self._tools_for(call.question), llm=self._llm, settings=self._settings, now=self._now
+            tools=self._tools_for(call.agent, call.question), llm=self._llm, settings=self._settings, now=self._now
         )
         return await insight_graph().ainvoke(
             state, context=runtime, config={**(config or {}), "recursion_limit": 12}

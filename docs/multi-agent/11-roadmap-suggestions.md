@@ -25,7 +25,7 @@ Details, configuration and operations: [12-phase0-implementation.md](./12-phase0
 | Baseline metrics (ingest lag, msgs/s, CPU, WS count, memory) | ✅ Prometheus | Data to decide on any later optimisation |
 | JWT clock-skew leeway | ✅ added (found while testing) | Tokens were rejected as "issued in the future" when a clock stepped back |
 
-### Phase 1 — Supervisor + first specialists 🟡 implemented (2026-11-11), except moving `actions/`
+### Phase 1 — Supervisor + first specialists ✅ implemented (2026-11-11); `actions/` moved and real-model parity checked 2026-11-12
 
 Details, configuration and known limits: [14-phase1-implementation.md](./14-phase1-implementation.md).
 
@@ -35,7 +35,11 @@ Details, configuration and known limits: [14-phase1-implementation.md](./14-phas
 - Trajectory evals + multi-agent dataset. SSE streaming with status events.
 - Thread memory (checkpointer) for follow-up questions.
 
-### Phase 2 — Guardrails & platform in Python (2–3 weeks, can overlap Phase 1)
+### Phase 2 — Guardrails & platform in Python ✅ implemented (2026-11-12)
+
+Details, configuration and known limits: [15-phase2-implementation.md](./15-phase2-implementation.md). Two deliberate differences from
+the plan below: the guard's fast path runs in the service before the graph (masking must precede the checkpoint) and acts through a
+graph node, and tokens are debited by the service after the graph from the same usage records the metrics use, not by each node.
 
 - Input guard as a FastAPI middleware plus a graph node: normalisation, regex/jailbreak fast-path, optional
   classifier for grey-zone inputs.
@@ -45,7 +49,14 @@ Details, configuration and known limits: [14-phase1-implementation.md](./14-phas
   change without a deploy.
 - Prompt/model registry and feature flags (kill switches per agent).
 
-### Phase 3 — Planning agents (4–6 weeks)
+### Phase 3 — Carry-over gate, then planning agents (4–6 weeks)
+
+**Gate first** (items 3.5 to 3.14 in the [tracker](./13-progress-tracker.md)): the L3 judge and real-model quality measurement, answer
+prompt v6, switching the frontend to v2 and retiring v1, ingest-side masking and risk scoring of documents, the retrieval upgrade,
+the compound eval dataset (6 → 80), mixed "explain and do", multilingual guard and follow-ups, and a retry policy on agent nodes.
+Every known limit from Phases 0–2 is traced to an item in the tracker's coverage table (section 8).
+
+**Then the agents:**
 
 - **Forecast Agent** (ML: solar + load quantile models; physics fallback from `simulator/engines`).
 - **Optimizer Agent** (schedule solver + battery strategy).
@@ -61,12 +72,14 @@ Details, configuration and known limits: [14-phase1-implementation.md](./14-phas
   machine (`RECEIVED → VALIDATED → POLICY_OK → DISPATCHED → ACKED | FAILED | EXPIRED`), kill switch, per-device
   rate limit, append-only audit. No LLM in this path.
 - **Monitor**, **Recommender**, **Reporter** ambient/batch agents; provider batch APIs.
+- Exit gate: measure checkpoint write volume per question and set retention and durability from it; move `HomeNotification` and `AutomationRule` out of the Device Action package.
 
 ### Phase 5 — Scale and operate (ongoing)
 
 - Scale ingest workers horizontally (`--scale ingest-worker=N`, KEDA on queue lag). Batch Timescale writes
   (`COPY`/`executemany`) and pipeline Redis calls.
 - Run several uvicorn workers per pod. Scale agent pods on in-flight requests.
+- Plans and cost control: a plan-tier endpoint, per-tenant monthly budget, reservation-based budgeting. Revisit token streaming and OPA only if their triggers fire (tracker items 5.6 to 5.8).
 - Use an off-the-shelf gateway (Envoy, Kong or Traefik) for TLS, routing and coarse rate limits.
 - Online judge sampling, canary pipeline, cost dashboards, nightly red-team generator.
 

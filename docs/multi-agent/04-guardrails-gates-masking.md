@@ -27,6 +27,13 @@ flowchart LR
 | **G8 Output guard** | Before final event | Schema, numeric grounding, citations, policy, PII leakage, tone/length | Retry once → deterministic fallback | Partial: schema + **numeric grounding** (Phase 0; falls back without a retry) |
 | **G9 Release gate** | CI/CD | Eval thresholds, red-team pass rate, cost/latency regressions | Block merge/deploy | No ([05](./05-evals.md)) |
 
+> **Implementation status (2026-11-12, [15](./15-phase2-implementation.md)).** G1 (fast path and optional classifier), G3, G5 and the
+> G8 checks #5 (claims) and #6 (personal data) are built, in Python. The 12 PII classes, the 7 injection categories, the cool-down,
+> the kill switches and the registry follow this document. Not built: the "every action always takes the slow path" row (the action route
+> is exclusive, only proposes, needs the user's confirmation and keeps its own `safety.py` check, and a grey-zone command is refused
+> outright); masking and scanning of documents at ingest (the output is scanned instead); NER for names and addresses; OPA; the Go guard.
+> v1 (`/assistant/...`) has none of it.
+
 ## 2. Input guardrails (G1)
 
 Two tiers, so that most traffic pays microseconds and only suspicious traffic pays model latency.

@@ -13,11 +13,11 @@ from app.modules.onboarding.models import GridConfig  # noqa: F401
 from app.modules.onboarding.models import SolarSystem  # noqa: F401
 from app.modules.onboarding.models import TrackedAppliance  # noqa: F401
 
-from app.modules.assistant.actions.models import ActionAuditEvent  # noqa: F401
-from app.modules.assistant.actions.models import ActionProposal  # noqa: F401
-from app.modules.assistant.actions.models import AutomationRule  # noqa: F401
-from app.modules.assistant.actions.models import DeviceOverride  # noqa: F401
-from app.modules.assistant.actions.models import HomeNotification  # noqa: F401
+from app.agents_platform.agents.device_action.models import ActionAuditEvent  # noqa: F401
+from app.agents_platform.agents.device_action.models import ActionProposal  # noqa: F401
+from app.agents_platform.agents.device_action.models import AutomationRule  # noqa: F401
+from app.agents_platform.agents.device_action.models import DeviceOverride  # noqa: F401
+from app.agents_platform.agents.device_action.models import HomeNotification  # noqa: F401
 from app.modules.knowledge.models import BillExtraction  # noqa: F401
 from app.modules.knowledge.models import KnowledgeChunk  # noqa: F401
 from app.modules.knowledge.models import KnowledgeDocument  # noqa: F401

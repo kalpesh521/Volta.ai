@@ -18,8 +18,8 @@ from app.core.deps import get_current_user
 from app.core.exceptions import AppError
 from app.core.rate_limit import limiter
 from app.models.user import User
-from app.modules.assistant.actions.deps import get_action_service
-from app.modules.assistant.actions.service import ActionService
+from app.agents_platform.agents.device_action.deps import get_action_service
+from app.agents_platform.agents.device_action.service import ActionService
 from app.modules.assistant.ops.schemas import (
     AutomationIn,
     AutomationOut,

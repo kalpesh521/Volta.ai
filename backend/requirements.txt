@@ -24,6 +24,7 @@ authlib==1.3.2
 slowapi==0.1.9
 
 redis[hiredis]==5.2.1
+cryptography==50.0.2  # AES-GCM for the PII vault (also pulled in by Authlib and google-auth)
 aio-pika==9.5.5
 celery==5.4.0
 

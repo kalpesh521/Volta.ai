@@ -40,6 +40,9 @@ class SupervisorState(TypedDict, total=False):
     # input
     question: str
     request_id: str
+    # The input guard's fast-path verdict, supplied with every question and updated by the `input_guard` node.
+    # Never holds raw personal data (see `GuardedInput.to_state`).
+    guard: dict[str, Any]
 
     # memory: survives across questions in a thread
     turns: Annotated[list[Turn], append_turns]
@@ -60,6 +63,7 @@ class SupervisorState(TypedDict, total=False):
     ungrounded: list[str]
     grounding: dict[str, Any] | None
     fallback_reason: str | None
+    output_violations: list[str]
     confidence: str
     route: str
 
@@ -88,9 +92,10 @@ def per_turn_reset() -> dict[str, Any]:
         "ungrounded": [],
         "grounding": None,
         "fallback_reason": None,
+        "output_violations": [],
         "confidence": "low",
         "route": "",
     }
 
 
-PERSISTENT_KEYS = frozenset({"question", "request_id", "turns"})
+PERSISTENT_KEYS = frozenset({"question", "request_id", "guard", "turns"})

@@ -1,5 +1,5 @@
 """
-The supervisor graph: classify, plan, dispatch agents in parallel, synthesize, gate, finalize.
+The supervisor graph: guard, classify, plan, dispatch agents in parallel, synthesize, gate, finalize.
 
 Agents return to the supervisor and never to each other. Only the supervisor dispatches, so a plan is
 bounded (at most `MAX_AGENTS_PER_PLAN` agents, one regeneration) and every step is auditable.
@@ -27,6 +27,7 @@ def build_supervisor(checkpointer: BaseCheckpointSaver | None) -> CompiledStateG
     graph = StateGraph(SupervisorState, context_schema=SupervisorRuntime)
 
     graph.add_node(nodes.BEGIN_TURN, nodes.begin_turn)
+    graph.add_node(nodes.INPUT_GUARD, nodes.input_guard)
     graph.add_node(nodes.CLASSIFY, nodes.classify)
     graph.add_node(nodes.PLAN, nodes.plan)
     for agent in AgentName:
@@ -39,7 +40,12 @@ def build_supervisor(checkpointer: BaseCheckpointSaver | None) -> CompiledStateG
     graph.add_node(nodes.FINALIZE, nodes.finalize)
 
     graph.add_edge(START, nodes.BEGIN_TURN)
-    graph.add_edge(nodes.BEGIN_TURN, nodes.CLASSIFY)
+    graph.add_edge(nodes.BEGIN_TURN, nodes.INPUT_GUARD)
+    graph.add_conditional_edges(
+        nodes.INPUT_GUARD,
+        nodes.route_after_input_guard,
+        {nodes.CLASSIFY: nodes.CLASSIFY, nodes.REFUSE: nodes.REFUSE},
+    )
     graph.add_edge(nodes.CLASSIFY, nodes.PLAN)
     graph.add_conditional_edges(
         nodes.PLAN, nodes.dispatch, [nodes.REFUSE, *(agent.value for agent in AgentName)]

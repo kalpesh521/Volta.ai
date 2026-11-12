@@ -13,11 +13,11 @@ from typing_extensions import TypedDict
 from app.ai.checkpointer import CheckpointerProvider, libpq_conninfo
 from app.ai.config import AISettings
 from app.core.config import settings
-from app.modules.assistant.actions.deps import get_action_graph, get_command_publisher
-from app.modules.assistant.actions.maintenance import expire_waiting, prune_checkpoints, sweep
-from app.modules.assistant.actions.models import ActionAuditEvent, ActionProposal
-from app.modules.assistant.actions.publisher import RecordingPublisher
-from app.modules.assistant.actions.service import AWAITING, CONFIRMING, ActionService
+from app.agents_platform.agents.device_action.deps import get_action_graph, get_command_publisher
+from app.agents_platform.agents.device_action.maintenance import expire_waiting, prune_checkpoints, sweep
+from app.agents_platform.agents.device_action.models import ActionAuditEvent, ActionProposal
+from app.agents_platform.agents.device_action.publisher import RecordingPublisher
+from app.agents_platform.agents.device_action.service import AWAITING, CONFIRMING, ActionService
 from main import app
 from tests.assistant_helpers import TZ, auth_headers, ingest, make_tick
 from tests.onboarding_helpers import complete_hybrid_onboarding

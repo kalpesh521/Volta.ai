@@ -19,7 +19,7 @@ from typing import Protocol
 from langchain_core.runnables import RunnableConfig
 
 from app.agents_platform.contracts import AgentCall, AgentName, AgentResult, AgentStatus, AnswerParts
-from app.modules.assistant.actions.schemas import ActionResponse
+from app.agents_platform.agents.device_action.schemas import ActionResponse
 from app.modules.onboarding.models import SolarSystem
 
 # Marks a result whose deterministic draft is the answer and must not be rewritten by an LLM.

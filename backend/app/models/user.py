@@ -33,6 +33,8 @@ class User(Base):
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Which daily AI token budget applies: "free" or "plus" (see app/agents_platform/budgets/tiers.py).
+    plan_tier: Mapped[str] = mapped_column(String(16), default="free", server_default="free", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

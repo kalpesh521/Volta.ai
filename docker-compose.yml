@@ -48,6 +48,9 @@ x-backend: &backend
     AI_CHECKPOINT_BACKEND: postgres
     # Shared rate-limit counters. Database 1: database 0 holds the live telemetry snapshot.
     RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+    # Token budgets, cool-downs and kill-switch overrides shared by every API replica. Database 2.
+    AI_PLATFORM_STORE: redis
+    AI_REDIS_URL: redis://redis:6379/2
     OTEL_ENABLED: ${OTEL_ENABLED:-false}
     OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
   restart: unless-stopped
@@ -215,7 +218,7 @@ services:
     command:
       - sh
       - -c
-      - "while true; do python -m app.modules.assistant.actions.maintenance || true; python -m app.agents_platform.maintenance || true; sleep 3600; done"
+      - "while true; do python -m app.agents_platform.agents.device_action.maintenance || true; python -m app.agents_platform.maintenance || true; sleep 3600; done"
     healthcheck:
       disable: true
     depends_on:

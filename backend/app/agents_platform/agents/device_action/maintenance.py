@@ -1,7 +1,7 @@
 """
 Housekeeping for device-action proposals. Run it at least once per retention period:
 
-    python -m app.modules.assistant.actions.maintenance
+    python -m app.agents_platform.agents.device_action.maintenance
 
 1. Proposals nobody answered before `expires_at` are recorded as `expired`, with an audit event.
 2. LangGraph checkpoints of proposals that finished (or expired) more than
@@ -24,8 +24,8 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.logging_config import configure_logging
 from app.core.metrics import ACTION_PROPOSALS
-from app.modules.assistant.actions.models import ActionAuditEvent, ActionProposal
-from app.modules.assistant.actions.service import AWAITING, CONFIRMING
+from app.agents_platform.agents.device_action.models import ActionAuditEvent, ActionProposal
+from app.agents_platform.agents.device_action.service import AWAITING, CONFIRMING
 
 logger = logging.getLogger("volta.actions.maintenance")
 

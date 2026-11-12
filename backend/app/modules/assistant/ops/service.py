@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import EnergyNotFoundError
-from app.modules.assistant.actions.models import AutomationRule, HomeNotification
-from app.modules.assistant.actions.service import ActionService
+from app.agents_platform.agents.device_action.models import AutomationRule, HomeNotification
+from app.agents_platform.agents.device_action.service import ActionService
 from app.modules.assistant.domain.alerts import alerts_from_home
 from app.modules.assistant.notifications.cache import notification_cache
 from app.modules.assistant.notifications.deliver import save_notification

@@ -31,10 +31,13 @@ from app.agents_platform.evals.cases import (
     load_trajectories,
 )
 from app.agents_platform.evals.stubs import ScriptedLLM, default_stub_agents
+from app.agents_platform.guardrails.classifier import InjectionVerdict
+from app.agents_platform.guardrails.input_guard import InputGuard
 from app.agents_platform.orchestration import nodes
 from app.agents_platform.orchestration.runtime import SupervisorRuntime
 from app.agents_platform.orchestration.supervisor import build_supervisor
 from app.ai.config import AISettings, LLMRole
+from app.ai.errors import LLMInvocationError
 from app.modules.assistant.domain.intents import Intent, IntentClassification
 
 _AGENT_NODES = frozenset(agent.value for agent in AgentName)
@@ -50,6 +53,8 @@ class TurnResult:
     method: str
     router_calls: int
     answer_calls: int
+    guard_calls: int
+    guard: str
 
 
 @dataclass(frozen=True)
@@ -63,10 +68,16 @@ class CaseResult:
         return tuple(f"turn {i}: {f}" for i, t in enumerate(self.turns, start=1) for f in t.failures)
 
 
-def expected_path(route: str, agents: Sequence[str]) -> tuple[str, ...]:
-    """The graph nodes a route must run, in order. Agents run in one parallel step, shown as `a+b`."""
-    head = (nodes.BEGIN_TURN, nodes.CLASSIFY, nodes.PLAN)
+def expected_path(route: str, agents: Sequence[str], *, blocked: bool = False) -> tuple[str, ...]:
+    """
+    The graph nodes a route must run, in order. Agents run in one parallel step, shown as `a+b`.
+
+    A blocked input is refused by the input guard itself, before classification and planning.
+    """
+    head = (nodes.BEGIN_TURN, nodes.INPUT_GUARD, nodes.CLASSIFY, nodes.PLAN)
     if route == "refusal":
+        if blocked:
+            return (nodes.BEGIN_TURN, nodes.INPUT_GUARD, nodes.REFUSE, nodes.FINALIZE)
         return (*head, nodes.REFUSE, nodes.FINALIZE)
     step = "+".join(sorted(agents))
     tail = (nodes.JOIN, nodes.SYNTHESIZE, nodes.FINALIZE)
@@ -92,12 +103,17 @@ def _collapse(updates: Sequence[str]) -> tuple[str, ...]:
     return tuple(path)
 
 
-async def _run_turn(graph, runtime: SupervisorRuntime, llm: ScriptedLLM, thread: str, turn: TurnExpectation):
+async def _run_turn(
+    graph, runtime: SupervisorRuntime, llm: ScriptedLLM, thread: str, turn: TurnExpectation, guard: InputGuard
+):
     routers_before, answers_before = llm.count(LLMRole.ROUTER), llm.count(LLMRole.ANSWER)
+    guards_before = llm.count(LLMRole.GUARD)
     seen: list[str] = []
     final: dict = {}
+    # The same fast path the service runs before the graph: normalise, score, mask.
+    guarded = guard.inspect(turn.question, request_id="eval")
     async for mode, chunk in graph.astream(
-        {"question": turn.question, "request_id": "eval"},
+        {"question": guarded.text, "request_id": "eval", "guard": guarded.to_state()},
         context=runtime,
         config={"configurable": {"thread_id": thread}},
         stream_mode=["updates", "values"],
@@ -111,10 +127,13 @@ async def _run_turn(graph, runtime: SupervisorRuntime, llm: ScriptedLLM, thread:
         _collapse(seen),
         llm.count(LLMRole.ROUTER) - routers_before,
         llm.count(LLMRole.ANSWER) - answers_before,
+        llm.count(LLMRole.GUARD) - guards_before,
     )
 
 
-def _check(turn: TurnExpectation, final: dict, path: tuple[str, ...], routers: int, answers: int) -> list[str]:
+def _check(
+    turn: TurnExpectation, final: dict, path: tuple[str, ...], routers: int, answers: int, guards: int
+) -> list[str]:
     failures: list[str] = []
     ran = {r["agent"] for r in final.get("results", [])}
     if ran != set(turn.agents):
@@ -131,10 +150,24 @@ def _check(turn: TurnExpectation, final: dict, path: tuple[str, ...], routers: i
     if turn.llm_answer_calls is not None and answers != turn.llm_answer_calls:
         failures.append(f"answer calls: expected {turn.llm_answer_calls}, got {answers}")
 
-    structural = expected_path(turn.route, sorted(turn.agents))
+    decision = (final.get("guard") or {}).get("decision")
+    if turn.guard is not None and decision != turn.guard:
+        failures.append(f"guard: expected {turn.guard}, got {decision}")
+    if turn.llm_guard_calls is not None and guards != turn.llm_guard_calls:
+        failures.append(f"guard calls: expected {turn.llm_guard_calls}, got {guards}")
+
+    structural = expected_path(turn.route, sorted(turn.agents), blocked=decision == "block")
     if path != structural:
         failures.append(f"path: expected {' > '.join(structural)}, got {' > '.join(path)}")
     return failures
+
+
+def _verdict(outcome: str | None) -> InjectionVerdict | Exception | None:
+    if outcome == "injection":
+        return InjectionVerdict(is_injection=True, reason="eval")
+    if outcome == "unavailable":
+        return LLMInvocationError("guard model call failed (eval)")
+    return None  # clean
 
 
 async def evaluate_case(case: TrajectoryCase) -> CaseResult:
@@ -144,12 +177,13 @@ async def evaluate_case(case: TrajectoryCase) -> CaseResult:
         classification = IntentClassification(
             primary_intent=Intent(turn.router_intent or Intent.OUT_OF_SCOPE.value)
         )
-        llm = ScriptedLLM(classification=classification)
-        runtime = SupervisorRuntime(
-            agents=default_stub_agents(), llm=llm, settings=AISettings(_env_file=None)
+        llm = ScriptedLLM(classification=classification, verdict=_verdict(turn.classifier))
+        settings = AISettings(_env_file=None, AI_GUARD_CLASSIFIER_ENABLED=turn.classifier is not None)
+        runtime = SupervisorRuntime(agents=default_stub_agents(), llm=llm, settings=settings)
+        final, path, routers, answers, guards = await _run_turn(
+            graph, runtime, llm, case.id, turn, InputGuard(settings)
         )
-        final, path, routers, answers = await _run_turn(graph, runtime, llm, case.id, turn)
-        failures = _check(turn, final, path, routers, answers)
+        failures = _check(turn, final, path, routers, answers, guards)
         results.append(
             TurnResult(
                 question=turn.question,
@@ -160,6 +194,8 @@ async def evaluate_case(case: TrajectoryCase) -> CaseResult:
                 method=final.get("classification_method", ""),
                 router_calls=routers,
                 answer_calls=answers,
+                guard_calls=guards,
+                guard=(final.get("guard") or {}).get("decision", ""),
             )
         )
     return CaseResult(case.id, all(t.passed for t in results), tuple(results))
@@ -181,6 +217,8 @@ def summarize(results: Sequence[CaseResult]) -> dict[str, object]:
         ),
         "router_llm_calls": sum(t.router_calls for t in turns),
         "answer_llm_calls": sum(t.answer_calls for t in turns),
+        "guard_llm_calls": sum(t.guard_calls for t in turns),
+        "inputs_blocked": sum(t.guard == "block" for t in turns),
     }
 
 

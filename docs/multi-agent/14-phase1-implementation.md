@@ -1,8 +1,9 @@
 # 14 — Phase 1 Implementation
 
-Status: **done except one item** (2026-11-11). All Python, FastAPI and LangGraph. The v1 endpoints are untouched and
-still live. The one item not done is physically relocating `assistant/actions/` (see §9). 474 tests pass with Postgres and
-Redis available (462 pass and 12 skip without them).
+Status: **done** (2026-11-11). All Python, FastAPI and LangGraph. The v1 endpoints are untouched and still live. The two items
+left open at the time, relocating `assistant/actions/` and a real-model parity check, were closed on 2026-11-12: see
+[15 §9](./15-phase2-implementation.md). When Phase 1 was completed 474 tests passed with Postgres and Redis available (462 pass
+and 12 skip without them); the current figures are in the [tracker](./13-progress-tracker.md).
 
 Design this implements: [02](./02-agent-catalog.md), [03](./03-langgraph-design.md), [05 §4](./05-evals.md).
 
@@ -13,7 +14,7 @@ Design this implements: [02](./02-agent-catalog.md), [03](./03-langgraph-design.
 | 1.1 | Supervisor | [orchestration/](../../backend/app/agents_platform/orchestration/) | Classify, plan, dispatch agents in parallel with `Send`, `join(defer=True)`, one synthesizer, output gate, finalize |
 | 1.2 | Energy Insight agent | [agents/energy_insight.py](../../backend/app/agents_platform/agents/energy_insight.py) | The v1 tools, analytics, freshness and projection, returning facts instead of an answer |
 | 1.3 | Knowledge agent | [agents/knowledge.py](../../backend/app/agents_platform/agents/knowledge.py) | The Phase 0 indexed retrieval, returning passages as citations, or a deterministic "not in your documents" |
-| 1.4 | Device Action agent | [agents/device_action.py](../../backend/app/agents_platform/agents/device_action.py) | Exclusive route. Proposes through the existing action workflow, never sends a command |
+| 1.4 | Device Action agent | [agents/device_action/agent.py](../../backend/app/agents_platform/agents/device_action/agent.py) | Exclusive route. Proposes through the existing action workflow, never sends a command |
 | 1.5 | Trajectory evals, streaming | [evals/](../../backend/app/agents_platform/evals/), [api/router.py](../../backend/app/agents_platform/api/router.py) | 42 cases and 56 turns asserting route, agents, node path and model calls; SSE `status` and `final` events |
 | 1.6 | Thread memory, regeneration | [memory.py](../../backend/app/agents_platform/orchestration/memory.py), [conversations.py](../../backend/app/agents_platform/conversations.py) | Follow-ups inherit the previous topic; an ungrounded answer is regenerated once, with the failing numbers listed |
 
@@ -175,17 +176,19 @@ output gate, and the device action no longer exclusive.
 
 ## 9. Known limits (not done in Phase 1)
 
+Every row is scheduled: the [tracker's coverage table](./13-progress-tracker.md) (section 8) maps each one to a numbered item or to an action for you.
+
 | Limit | Next step |
 |---|---|
-| **`assistant/actions/` has not been moved** under the Device Action agent. The agent is an adapter over the unchanged `ActionService`. Moving the package while v1 imports it adds risk and no behaviour | Move it when v1 retires (Phase 2) |
-| **v2 is not yet proven at parity with a real model.** Parity is shown with a fake model on five question types, and routing parity on all 26 v1 cases. The answer-quality and judge layers (L3) of doc 05 do not exist yet | Build the L3 judge, run both endpoints on the same questions, then switch the frontend |
+| ~~`assistant/actions/` has not been moved~~ | **Done 2026-11-12**: it is now `agents/device_action/` ([15 §9.1](./15-phase2-implementation.md)) |
+| **v2 is not yet proven at parity with a real model on answer quality.** Parity is shown with a fake model on five question types, routing parity on all 26 v1 cases, and (2026-11-12) a byte-identical prompt for both endpoints plus one real-model pair of calls: structure identical, wording different through sampling ([15 §9.3](./15-phase2-implementation.md)). The L3 judge of doc 05 does not exist yet | Build the L3 judge, run both endpoints on many questions, then switch the frontend |
 | The multi-agent dataset has 6 compound cases (5 single-turn and one compound follow-up) and 11 memory cases. Doc 05 targets 80 compound | Grow it from production questions (masked) and synthetic paraphrases |
 | Follow-up detection is a rule heuristic and English only | Hinglish and Hindi with the multilingual work in doc 11 §2 |
 | A message mixing "explain" and "do" runs only the action. Doc 03 asks for the explanation first, then the action as a follow-up proposal | Planner change plus an eval case |
-| Two concurrent questions in one conversation are not serialised. Memory is last-writer-wins | A per-thread lock in Redis (Phase 2 or 5) |
+| ~~Two concurrent questions in one conversation are not serialised~~ | **Done 2026-11-12**: a lease lock, `409 conversation_busy` ([15 §9.2](./15-phase2-implementation.md)) |
 | Exceeding the whole-request deadline returns `504`, not a partial answer | Partial results once streaming carries them |
 | Answer text is not streamed token by token (§3.8) | Revisit if a plain-text answer mode is added |
 | No endpoint lists or reads a conversation's history | Add when the frontend needs it. The data is in the checkpoint |
-| No `RetryPolicy` on agent nodes, and no token budgets, input guard or PII masking | Phase 2 |
+| No `RetryPolicy` on agent nodes. ~~No token budgets, input guard or PII masking~~ | Budgets, guard and masking: **done in Phase 2** ([15](./15-phase2-implementation.md)). Retry policy: when needed |
 | The router model is not given conversation history (rules and memory resolve follow-ups) | Add if router-routed follow-ups show up in production |
 | Checkpoints are written after every graph step (`durability="async"`). Volume per question is not measured yet | Measure with the Phase 0 metrics before Phase 5 |

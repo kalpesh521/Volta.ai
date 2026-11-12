@@ -7,8 +7,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.assistant.actions.models import ActionAuditEvent, ActionProposal, DeviceOverride
-from app.modules.assistant.actions.worker import handle_device_command
+from app.agents_platform.agents.device_action.models import ActionAuditEvent, ActionProposal, DeviceOverride
+from app.agents_platform.agents.device_action.worker import handle_device_command
 from app.modules.assistant.notifications.deliver import save_notification
 
 

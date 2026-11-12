@@ -14,6 +14,8 @@ from typing import Protocol
 from langchain_core.runnables import RunnableConfig
 
 from app.agents_platform.contracts import AgentCall, AgentName, AgentResult
+from app.agents_platform.registry.flags import FlagSnapshot
+from app.agents_platform.registry.prompts import ResolvedPrompts
 from app.ai.config import AISettings
 from app.ai.llm.gateway import StructuredLLM
 
@@ -31,6 +33,9 @@ class SupervisorRuntime:
     agents: Mapping[AgentName, SpecialistAgent]
     llm: StructuredLLM
     settings: AISettings
+    # What is switched on and which prompt versions run, resolved once per request.
+    flags: FlagSnapshot = FlagSnapshot()
+    prompts: ResolvedPrompts = ResolvedPrompts()
 
     def deadlines(self) -> dict[AgentName, float]:
         return {

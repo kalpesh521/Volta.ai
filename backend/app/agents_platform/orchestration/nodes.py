@@ -1,9 +1,9 @@
 """
 Supervisor graph nodes.
 
-    begin_turn → classify → plan ─┬→ <agent> ×N (parallel, via Send) → join → synthesize → output_gate → finalize
+    begin_turn → input_guard ─┬→ classify → plan ─┬→ <agent> ×N (parallel, via Send) → join → synthesize → output_gate → finalize
                                   ├→ <device_action> (exclusive)  ───────┘                     ↑      │
-                                  └→ refuse ───────────────────────────────────────────────────┼──────┤
+                                  └→ refuse ←── (blocked input, off-topic) ────────────────────┼──────┤
                                                                       regenerate once ←────────┘      │
                                                                       deterministic_fallback ─────────┘
 
@@ -29,6 +29,11 @@ from app.agents_platform.contracts import (
     AnswerParts,
     Plan,
 )
+from app.agents_platform.guardrails.classifier import classify_injection
+from app.agents_platform.guardrails.input_guard import Decision
+from app.agents_platform.guardrails.messages import Refusal, refusal_parts
+from app.agents_platform.guardrails.output_guard import check_answer
+from app.agents_platform.guardrails.pii.masker import redact_leaks
 from app.agents_platform.orchestration.events import status_event
 from app.agents_platform.orchestration.memory import resolve_follow_up
 from app.agents_platform.orchestration.planner import build_agent_plan
@@ -43,9 +48,20 @@ from app.agents_platform.orchestration.synthesis import (
     unavailable_answer,
     usable,
 )
+from app.agents_platform.registry.flags import agent_flag
 from app.ai.config import LLMRole
 from app.ai.errors import LLMInvocationError, LLMNotConfiguredError
-from app.core.metrics import AGENT_RUNS, AGENT_SECONDS, GROUNDING_CHECKS, SUPERVISOR_REGENERATIONS
+from app.ai.llm.gated import GatedLLM
+from app.core.metrics import (
+    AGENT_RUNS,
+    AGENT_SECONDS,
+    GROUNDING_CHECKS,
+    GUARD_DECISIONS,
+    KILL_SWITCH_HITS,
+    OUTPUT_VIOLATIONS,
+    PII_ENTITIES,
+    SUPERVISOR_REGENERATIONS,
+)
 from app.modules.assistant.domain.answers import AnswerDraft, FallbackReason, compose_fallback_answer
 from app.modules.assistant.domain.analytics import AnalyticsBundle
 from app.modules.assistant.domain.context import AIContext
@@ -54,11 +70,11 @@ from app.modules.assistant.domain.grounding import check_grounding
 from app.modules.assistant.domain.intents import Intent, classify_by_rules
 from app.modules.assistant.graph.routing import route_question
 from app.modules.assistant.graph.state import llm_record
-from app.modules.assistant.prompts import answer_messages
 
 logger = logging.getLogger("volta.agents.supervisor")
 
 BEGIN_TURN = "begin_turn"
+INPUT_GUARD = "input_guard"
 CLASSIFY = "classify"
 PLAN = "plan"
 JOIN = "join"
@@ -97,11 +113,61 @@ def begin_turn(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> d
     return per_turn_reset()
 
 
+def _untrusted(state: SupervisorState) -> bool:
+    return bool((state.get("guard") or {}).get("untrusted"))
+
+
+async def input_guard(
+    state: SupervisorState, config: RunnableConfig, runtime: Runtime[SupervisorRuntime]
+) -> dict[str, Any]:
+    """
+    Gate G1, slow path. The fast path already ran before the graph (normalise, score, mask); this node acts on
+    its verdict.
+
+    * block  → refuse; no agent runs and no model is called
+    * review → a grey-zone input. With the classifier on, a small model decides: injection refuses, clean lifts
+               the restrictions. Without it, or when it cannot decide, the input stays *untrusted*: no router model
+               and no device action, only plain facts.
+    * allow  → continue
+    """
+    guard = dict(state.get("guard") or {})
+    decision = guard.get("decision", Decision.ALLOW.value)
+    update: dict[str, Any] = {}
+
+    if decision == Decision.REVIEW.value and runtime.context.settings.AI_GUARD_CLASSIFIER_ENABLED:
+        outcome = await classify_injection(runtime.context.llm, state["question"], config=config)
+        if outcome.llm_calls:
+            update["llm_calls"] = outcome.llm_calls
+        if outcome.injection is True:
+            GUARD_DECISIONS.labels(stage="classifier", decision="block").inc()
+            guard.update(decision=Decision.BLOCK.value, reason=Refusal.INPUT_BLOCKED.value, untrusted=False)
+            decision = Decision.BLOCK.value
+        elif outcome.injection is False:
+            GUARD_DECISIONS.labels(stage="classifier", decision="allow").inc()
+            guard.update(decision=Decision.ALLOW.value, reason=None, untrusted=False)
+            decision = Decision.ALLOW.value
+        else:
+            GUARD_DECISIONS.labels(stage="classifier", decision="review").inc()
+            if outcome.error:
+                update["errors"] = [outcome.error]
+
+    if decision == Decision.BLOCK.value:
+        reason = guard.get("reason") or Refusal.INPUT_BLOCKED.value
+        update["plan"] = Plan(refusal=reason).model_dump(mode="json")
+    return {**update, "guard": guard}
+
+
+def route_after_input_guard(state: SupervisorState) -> str:
+    return REFUSE if (state.get("plan") or {}).get("refusal") else CLASSIFY
+
+
 async def classify(
     state: SupervisorState, config: RunnableConfig, runtime: Runtime[SupervisorRuntime]
 ) -> dict[str, Any]:
     """Rules → follow-up from memory → router LLM. The first confident answer wins; rules cost no tokens."""
     ctx = runtime.context
+    # An untrusted input is never shown to the router model: rules and memory only.
+    router = GatedLLM(ctx.llm, reason="untrusted input") if _untrusted(state) else ctx.llm
     question = state["question"]
     rules = classify_by_rules(question)
     window = ctx.settings.AI_MEMORY_WINDOW_TURNS
@@ -111,7 +177,7 @@ async def classify(
     if follow_up is not None:
         match, effective = follow_up.match, follow_up.question
     else:
-        outcome = await route_question(question, llm=ctx.llm, config=config, rules=rules)
+        outcome = await route_question(question, llm=router, config=config, rules=rules)
         match, effective = outcome.match, question
         if outcome.llm_calls:
             update["llm_calls"] = outcome.llm_calls
@@ -127,9 +193,13 @@ async def classify(
 
 
 def plan(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dict[str, Any]:
+    intents = [Intent(i) for i in state["intents"]]
+    if _untrusted(state) and intents and intents[0] is Intent.DEVICE_CONTROL:
+        # Grey-zone input plus a device command: never act on it (doc 04 §2 decision table).
+        return {"plan": Plan(refusal=Refusal.INPUT_UNVERIFIED.value).model_dump(mode="json")}
     built = build_agent_plan(
         question=state["effective_question"],
-        intents=[Intent(i) for i in state["intents"]],
+        intents=intents,
         appliance=state.get("appliance"),
         deadlines=runtime.context.deadlines(),
     )
@@ -159,6 +229,10 @@ def make_agent_node(name: AgentName):
         payload: AgentInput, config: RunnableConfig, runtime: Runtime[SupervisorRuntime]
     ) -> dict[str, Any]:
         call = AgentCall.model_validate(payload["call"])
+        if not runtime.context.flags.agent_enabled(name):
+            KILL_SWITCH_HITS.labels(flag=agent_flag(name)).inc()
+            AGENT_RUNS.labels(agent=name.value, status=AgentStatus.DISABLED.value).inc()
+            return {"results": [AgentResult.failed(name, AgentStatus.DISABLED).model_dump(mode="json")]}
         _emit(runtime, status_event("agent_started", _STAGE_MESSAGES[name], agent=name.value))
         agent = runtime.context.agents.get(name)
         started = time.perf_counter()
@@ -201,13 +275,22 @@ async def synthesize(
     """
     Turn agent results into one answer.
 
+    * every agent is switched off       → "temporarily switched off", no data sources were asked
     * nothing usable came back          → a plain "could not load" answer
     * every result stands on its draft  → merge the drafts, no LLM (refusals, gaps, no data, actions)
+    * the model is off for this request → merge the drafts (kill switch, spent budget, no API key)
     * otherwise                         → one LLM call over the merged facts, then the output gate
     """
     ctx = runtime.context
-    good = usable(_results(state))
+    results = _results(state)
+    good = usable(results)
     if not good:
+        if results and all(r.status is AgentStatus.DISABLED for r in results):
+            return _answer_update(
+                refusal_parts(Refusal.FEATURE_DISABLED),
+                fallback_reason=Refusal.FEATURE_DISABLED.value,
+                route=FINALIZE,
+            )
         return _answer_update(
             unavailable_answer(), fallback_reason="agents_unavailable", route=FINALIZE
         )
@@ -216,13 +299,20 @@ async def synthesize(
             merge_drafts(good), fallback_reason=good[0].fallback_reason, route=FINALIZE
         )
 
+    if not ctx.llm.is_available(LLMRole.ANSWER):
+        return _answer_update(
+            merge_drafts(good, reason=FallbackReason.LLM_UNAVAILABLE),
+            fallback_reason=FallbackReason.LLM_UNAVAILABLE.value,
+            route=FINALIZE,
+        )
+
     attempts = state.get("attempts", 0)
     facts, analytics, freshness = prompt_payload(
         good,
         max_facts_chars=ctx.settings.AI_MAX_FACTS_CHARS,
         threshold_seconds=ctx.settings.AI_STALE_DATA_SECONDS,
     )
-    messages = answer_messages(
+    messages = ctx.prompts.answer_messages(
         question=state["effective_question"],
         intents=state["intents"],
         facts=facts,
@@ -257,6 +347,33 @@ def route_after_synthesize(state: SupervisorState) -> str:
 
 
 def output_gate(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dict[str, Any]:
+    """
+    Gate G8 for a model-written answer: what it may not claim, then whether its numbers are real.
+
+    1. Claims and advice a model must never make ("I switched it off", "bypass the breaker"). Not regenerated:
+       the verified deterministic answer replaces it at once.
+    2. Numbers: every one must trace to the facts the model was shown (`_grounding_gate`).
+    """
+    mode = runtime.context.settings.AI_OUTPUT_POLICY_MODE
+    if mode == "off":
+        return _grounding_gate(state, runtime)
+
+    violations = check_answer(state.get("answer") or {})
+    if violations:
+        for violation in violations:
+            OUTPUT_VIOLATIONS.labels(kind=violation.kind.value).inc()
+        logger.warning(
+            "answer withheld by output policy request_id=%s mode=%s rules=%s",
+            state.get("request_id"),
+            mode,
+            ",".join(v.rule for v in violations),
+        )
+        if mode == "enforce":
+            return {"output_violations": [v.rule for v in violations], "route": FALLBACK}
+    return _grounding_gate(state, runtime)
+
+
+def _grounding_gate(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dict[str, Any]:
     """
     Every number in a model-written answer must trace to the facts it was shown.
 
@@ -309,15 +426,21 @@ def route_after_gate(state: SupervisorState) -> str:
 
 
 def deterministic_fallback(state: SupervisorState) -> dict[str, Any]:
-    """The model's answer was not grounded even after a correction: state only what the agents verified."""
-    if state.get("attempts", 1) > 1:
-        SUPERVISOR_REGENERATIONS.labels(outcome="fell_back").inc()
-    parts = merge_drafts(usable(_results(state)), reason=FallbackReason.UNGROUNDED)
-    return _answer_update(parts, fallback_reason=FallbackReason.UNGROUNDED.value)
+    """The model's answer was withheld (a safety rule) or not grounded even after a correction: state only what the agents verified."""
+    if state.get("output_violations"):
+        reason = FallbackReason.POLICY
+    else:
+        reason = FallbackReason.UNGROUNDED
+        if state.get("attempts", 1) > 1:
+            SUPERVISOR_REGENERATIONS.labels(outcome="fell_back").inc()
+    return _answer_update(merge_drafts(usable(_results(state)), reason=reason), fallback_reason=reason.value)
 
 
 def refuse(state: SupervisorState) -> dict[str, Any]:
-    """An off-topic question: no agent runs and no tokens are spent."""
+    """A request that must not be answered: no agent runs and no tokens are spent. The wording is fixed."""
+    reason = (state.get("plan") or {}).get("refusal")
+    if reason in {r.value for r in Refusal}:
+        return _answer_update(refusal_parts(Refusal(reason)), fallback_reason=reason)
     draft = compose_fallback_answer(
         reason=FallbackReason.OUT_OF_SCOPE,
         intents=[Intent.OUT_OF_SCOPE],
@@ -333,6 +456,21 @@ def refuse(state: SupervisorState) -> dict[str, Any]:
 # --- exit -----------------------------------------------------------------------------------------
 
 
+_DETERMINISTIC_REFUSALS = frozenset({FallbackReason.OUT_OF_SCOPE.value, *(r.value for r in Refusal)})
+_REDACTED_FIELDS = ("observation", "explanation", "recommendation", "estimated_impact")
+
+
+def _redact_answer(answer: dict[str, str]) -> dict[str, str]:
+    """Gate G8, personal data: nothing the user must not be shown leaves in the reply, whatever put it there."""
+    cleaned = dict(answer)
+    for name in _REDACTED_FIELDS:
+        if name in cleaned:
+            cleaned[name], found = redact_leaks(cleaned[name])
+            for cls, count in found.items():
+                PII_ENTITIES.labels(pii_class=cls, where="output").inc(count)
+    return cleaned
+
+
 def finalize(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dict[str, Any]:
     """Guardrails the model cannot override, then remember the question for follow-ups."""
     settings = runtime.context.settings
@@ -346,17 +484,26 @@ def finalize(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dic
         passages=all_citations(good),
     )
 
-    failed = [r.agent.value for r in results if not r.status.usable]
+    answer = _redact_answer(answer)
+
+    failed = [r.agent.value for r in results if not r.status.usable and r.status is not AgentStatus.DISABLED]
+    switched_off = [r.agent.value for r in results if r.status is AgentStatus.DISABLED]
     warnings: list[str] = []
     for result in good:
         warnings.extend(result.warnings)
     if failed:
         warnings.append(f"Some information could not be loaded: {', '.join(failed)}.")
+    if switched_off and good:
+        warnings.append(f"Some features are temporarily switched off: {', '.join(switched_off)}.")
 
-    if state.get("fallback_reason") == FallbackReason.OUT_OF_SCOPE.value:
+    if (state.get("guard") or {}).get("untrusted"):
+        warnings.append("Your message looked unusual, so I only used plain facts about your home.")
+
+    if state.get("fallback_reason") in _DETERMINISTIC_REFUSALS:
         confidence = "high"
     else:
-        confidence = combine_confidence(good, degraded=bool(failed))
+        # An answer that is missing an agent's part is not fully confident, whether the agent failed or was switched off.
+        confidence = combine_confidence(good, degraded=bool(failed or switched_off))
 
     turn = Turn(
         question=state["question"],

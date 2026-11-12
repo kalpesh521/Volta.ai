@@ -22,9 +22,9 @@ from langgraph.types import interrupt
 
 from app.core.config import Settings
 from app.core.exceptions import EnergyNotFoundError
-from app.modules.assistant.actions.parse import parse_control_request
-from app.modules.assistant.actions.publisher import CommandBrokerError, CommandPublisher, DeviceCommand, new_command_id
-from app.modules.assistant.actions.safety import ActionFacts, evaluate_action
+from app.agents_platform.agents.device_action.parse import parse_control_request
+from app.agents_platform.agents.device_action.publisher import CommandBrokerError, CommandPublisher, DeviceCommand, new_command_id
+from app.agents_platform.agents.device_action.safety import ActionFacts, evaluate_action
 from app.modules.energy.service import EnergyService
 from app.modules.onboarding.models import SolarSystem
 

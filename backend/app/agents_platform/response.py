@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents_platform.api.schemas import AgentRunOut, SupervisorResponse
+from app.agents_platform.api.schemas import AgentRunOut, GuardOut, SupervisorResponse
 from app.agents_platform.contracts import AgentResult, Plan
 from app.agents_platform.orchestration.state import SupervisorState
 from app.agents_platform.orchestration.synthesis import (
@@ -12,7 +12,7 @@ from app.agents_platform.orchestration.synthesis import (
     usable,
 )
 from app.ai.config import LLMRole
-from app.modules.assistant.actions.schemas import ActionResponse
+from app.agents_platform.agents.device_action.schemas import ActionResponse
 from app.modules.assistant.prompts import PROMPT_VERSION
 from app.modules.assistant.schemas import (
     AssistantAnswer,
@@ -60,6 +60,7 @@ def to_response(
     tool_calls = [ToolCallOut.model_validate(c) for r in results for c in r.tool_calls]
     proposals = [p for r in results for p in r.proposals]
     grounding = state.get("grounding")
+    guard = state.get("guard")
 
     return SupervisorResponse(
         household_id=household_id,
@@ -84,6 +85,15 @@ def to_response(
             AgentRunOut(agent=r.agent, status=r.status, latency_ms=r.latency_ms, confidence=r.confidence)
             for r in results
         ],
+        guard=GuardOut(
+            decision=guard["decision"],
+            reason=guard.get("reason"),
+            categories=guard.get("categories", []),
+            pii_masked=guard.get("pii", {}),
+            untrusted=bool(guard.get("untrusted")),
+        )
+        if guard
+        else None,
         proposal=ActionResponse.model_validate(proposals[0]) if proposals else None,
         meta=AssistantMeta(
             request_id=request_id,

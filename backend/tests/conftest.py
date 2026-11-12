@@ -15,12 +15,15 @@ import os
 os.environ.setdefault("TELEMETRY_IO_ENABLED", "false")
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.agents_platform.api.deps import get_db_scope
 from app.core.database import Base, get_db
 from app.core.deps import get_google_oauth_client
 from app.core.rate_limit import limiter
@@ -80,3 +83,15 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def db_scope(db_session: AsyncSession):
+    """Streaming opens its own database scope; in tests that scope is the test transaction, never the real database."""
+
+    @asynccontextmanager
+    async def scope():
+        yield db_session
+        await db_session.flush()
+
+    app.dependency_overrides[get_db_scope] = lambda: scope

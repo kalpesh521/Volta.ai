@@ -16,7 +16,9 @@ One case per line. A case is one conversation, so a follow-up is a second turn:
 
 Turn fields: `question`, `agents` (exact set), `route` (single | multi | exclusive | refusal) are required.
 `intents` (exact, ordered), `method` (rules | memory | llm), `router_intent` (what the stub router model
-answers when the rules are not confident), and `llm` ({"router": n, "answer": n} exact call counts) are optional.
+answers when the rules are not confident), and `llm` ({"router": n, "answer": n, "guard": n} exact call counts)
+are optional. `guard` (allow | review | block) asserts the input guard's final decision. `classifier`
+(injection | clean | unavailable) turns the grey-zone classifier on and sets what the stub guard model answers.
 """
 from __future__ import annotations
 
@@ -32,7 +34,11 @@ from app.modules.assistant.evals.cases import EvalDatasetError
 DEFAULT_TRAJECTORIES_PATH = Path(__file__).with_name("trajectories.jsonl")
 ROUTES = frozenset({"single", "multi", "exclusive", "refusal"})
 METHODS = frozenset({"rules", "memory", "llm", "default"})
-_TURN_KEYS = frozenset({"question", "agents", "route", "intents", "method", "router_intent", "llm"})
+GUARD_DECISIONS = frozenset({"allow", "review", "block"})
+CLASSIFIER_OUTCOMES = frozenset({"injection", "clean", "unavailable"})
+_TURN_KEYS = frozenset(
+    {"question", "agents", "route", "intents", "method", "router_intent", "llm", "guard", "classifier"}
+)
 _REQUIRED_TURN_KEYS = frozenset({"question", "agents", "route"})
 
 
@@ -46,6 +52,9 @@ class TurnExpectation:
     router_intent: str | None = None
     llm_router_calls: int | None = None
     llm_answer_calls: int | None = None
+    llm_guard_calls: int | None = None
+    guard: str | None = None  # the input guard's final decision: allow | review | block
+    classifier: str | None = None  # what the grey-zone classifier answers: injection | clean | unavailable
 
 
 @dataclass(frozen=True)
@@ -135,10 +144,18 @@ def _build_turn(turn: object, where: str) -> TurnExpectation:
     if router_intent is not None and router_intent not in valid_intents:
         raise EvalDatasetError(f"{where}: 'router_intent' must be a known intent")
     llm = turn.get("llm", {})
-    if not isinstance(llm, dict) or set(llm) - {"router", "answer"} or not all(
+    if not isinstance(llm, dict) or set(llm) - {"router", "answer", "guard"} or not all(
         isinstance(v, int) and v >= 0 for v in llm.values()
     ):
-        raise EvalDatasetError(f"{where}: 'llm' must map router/answer to non-negative integers")
+        raise EvalDatasetError(f"{where}: 'llm' must map router/answer/guard to non-negative integers")
+    guard = turn.get("guard")
+    if guard is not None and guard not in GUARD_DECISIONS:
+        raise EvalDatasetError(f"{where}: 'guard' must be one of {sorted(GUARD_DECISIONS)}")
+    if guard == "block" and turn["route"] != "refusal":
+        raise EvalDatasetError(f"{where}: a blocked input is a refusal")
+    classifier = turn.get("classifier")
+    if classifier is not None and classifier not in CLASSIFIER_OUTCOMES:
+        raise EvalDatasetError(f"{where}: 'classifier' must be one of {sorted(CLASSIFIER_OUTCOMES)}")
 
     return TurnExpectation(
         question=question,
@@ -149,4 +166,7 @@ def _build_turn(turn: object, where: str) -> TurnExpectation:
         router_intent=router_intent,
         llm_router_calls=llm.get("router"),
         llm_answer_calls=llm.get("answer"),
+        llm_guard_calls=llm.get("guard"),
+        guard=guard,
+        classifier=classifier,
     )

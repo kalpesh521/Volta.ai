@@ -10,6 +10,9 @@ The v1 endpoints (/assistant/...) stay live. The response is a superset of v1's,
 changing the path. A device action comes back as a `proposal`; confirm it with the existing
 /assistant/actions/{id}/confirm.
 
+Before any work starts the request is admitted (cool-down after repeated refused inputs, kill switches, the user's
+daily token budget). A refused admission is `429` with `Retry-After`.
+
 Do not add `from __future__ import annotations` in this file. slowapi wraps the handlers and cannot
 resolve postponed annotations.
 """
@@ -19,9 +22,11 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from app.agents_platform.api.admission import Admission
 from app.agents_platform.api.deps import (
     DbScope,
     SupervisorServiceFactory,
+    get_admission,
     get_db_scope,
     get_service_factory,
     get_supervisor_service,
@@ -52,6 +57,7 @@ async def _stream(
     system: SolarSystem,
     factory: SupervisorServiceFactory,
     scope: DbScope,
+    admission: Admission,
 ) -> StreamingResponse:
     """
     Open the stream's database session and conversation first, so a bad conversation id is a plain 404.
@@ -66,6 +72,7 @@ async def _stream(
             payload.question,
             conversation_id=payload.conversation_id,
             request_id=_request_id(),
+            admission=admission,
         )
     except BaseException:
         await stack.aclose()
@@ -93,9 +100,15 @@ async def ask_my_assistant(
     user: User = Depends(get_current_user),
     system: SolarSystem = Depends(require_my_completed_system),
     service: SupervisorService = Depends(get_supervisor_service),
+    admission: Admission = Depends(get_admission),
 ) -> SupervisorResponse:
     return await service.ask(
-        system, user.id, payload.question, conversation_id=payload.conversation_id, request_id=_request_id()
+        system,
+        user.id,
+        payload.question,
+        conversation_id=payload.conversation_id,
+        request_id=_request_id(),
+        admission=admission,
     )
 
 
@@ -112,8 +125,11 @@ async def stream_my_assistant(
     system: SolarSystem = Depends(require_my_completed_system),
     factory: SupervisorServiceFactory = Depends(get_service_factory),
     scope: DbScope = Depends(get_db_scope),
+    admission: Admission = Depends(get_admission),
 ) -> StreamingResponse:
-    return await _stream(payload=payload, user=user, system=system, factory=factory, scope=scope)
+    return await _stream(
+        payload=payload, user=user, system=system, factory=factory, scope=scope, admission=admission
+    )
 
 
 @router.post(
@@ -128,9 +144,15 @@ async def ask_household_assistant(
     user: User = Depends(get_current_user),
     system: SolarSystem = Depends(require_owned_household),
     service: SupervisorService = Depends(get_supervisor_service),
+    admission: Admission = Depends(get_admission),
 ) -> SupervisorResponse:
     return await service.ask(
-        system, user.id, payload.question, conversation_id=payload.conversation_id, request_id=_request_id()
+        system,
+        user.id,
+        payload.question,
+        conversation_id=payload.conversation_id,
+        request_id=_request_id(),
+        admission=admission,
     )
 
 
@@ -147,5 +169,8 @@ async def stream_household_assistant(
     system: SolarSystem = Depends(require_owned_household),
     factory: SupervisorServiceFactory = Depends(get_service_factory),
     scope: DbScope = Depends(get_db_scope),
+    admission: Admission = Depends(get_admission),
 ) -> StreamingResponse:
-    return await _stream(payload=payload, user=user, system=system, factory=factory, scope=scope)
+    return await _stream(
+        payload=payload, user=user, system=system, factory=factory, scope=scope, admission=admission
+    )

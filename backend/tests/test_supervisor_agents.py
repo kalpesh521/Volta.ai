@@ -8,14 +8,14 @@ from types import SimpleNamespace
 
 from langchain_core.tools import StructuredTool
 
-from app.agents_platform.agents.device_action import DEVICE_ACTION_REASON, DeviceActionAgent
+from app.agents_platform.agents.device_action.agent import DEVICE_ACTION_REASON, DeviceActionAgent
 from app.agents_platform.agents.energy_insight import EnergyInsightAgent
 from app.agents_platform.agents.insight_engine import InsightEngine
 from app.agents_platform.agents.knowledge import KnowledgeAgent
 from app.agents_platform.contracts import AgentCall, AgentName, AgentStatus
 from app.agents_platform.evals.stubs import ScriptedLLM
 from app.ai.config import AISettings, LLMRole
-from app.modules.assistant.actions.schemas import ActionResponse
+from app.agents_platform.agents.device_action.schemas import ActionResponse
 from app.modules.assistant.tools.registry import NoArgs, ToolName, unavailable
 
 
@@ -39,7 +39,7 @@ def tool(name: ToolName, fn) -> StructuredTool:
 
 def engine(tools: dict[ToolName, StructuredTool], llm: ScriptedLLM, **overrides) -> InsightEngine:
     return InsightEngine(
-        tools_for=lambda question: tools,
+        tools_for=lambda agent, question: tools,
         llm=llm,
         settings=AISettings(_env_file=None, **overrides),
         now=lambda: datetime.now(timezone.utc),

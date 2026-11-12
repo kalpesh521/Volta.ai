@@ -15,20 +15,37 @@ from fastapi import Depends, Request
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents_platform.api.admission import Admission, admit
 from app.agents_platform.conversations import ConversationRepository
 from app.agents_platform.orchestration.supervisor import build_supervisor
+from app.agents_platform.platform import Platform, build_platform
 from app.agents_platform.service import SupervisorService
 from app.ai.checkpointer import checkpointer_provider
-from app.ai.config import AISettings
+from app.ai.config import AISettings, get_ai_settings
 from app.ai.llm.gateway import StructuredLLM
 from app.core.database import AsyncSessionLocal, get_db
-from app.modules.assistant.actions.deps import get_action_graph, get_command_publisher
-from app.modules.assistant.actions.service import ActionService
+from app.core.deps import get_current_user
+from app.models.user import User
+from app.agents_platform.agents.device_action.deps import get_action_graph, get_command_publisher
+from app.agents_platform.agents.device_action.service import ActionService
 from app.modules.assistant.deps import get_assistant_settings, get_structured_llm
 from app.modules.energy.deps import get_energy_service, get_energy_store
 from app.modules.knowledge.deps import build_knowledge_service, get_embedder
 
 DbScope = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+
+
+@lru_cache
+def get_platform() -> Platform:
+    """Guardrails, budgets, flags and registries of this deployment. Built once; a bad setting fails here."""
+    return build_platform(get_ai_settings())
+
+
+async def get_admission(
+    user: User = Depends(get_current_user), platform: Platform = Depends(get_platform)
+) -> Admission:
+    """Cool-down, kill switch and token budget, before any work starts. Raises 429 when the request must wait."""
+    return await admit(user, platform)
 
 
 @lru_cache
@@ -61,6 +78,7 @@ class SupervisorServiceFactory:
     llm: StructuredLLM
     settings: AISettings
     graph: CompiledStateGraph
+    platform: Platform
 
     def __call__(self, db: AsyncSession) -> SupervisorService:
         energy = get_energy_service(self.request, get_energy_store())
@@ -78,6 +96,7 @@ class SupervisorServiceFactory:
             knowledge=build_knowledge_service(db, self.settings, get_embedder()),
             actions=actions,
             conversations=ConversationRepository(db),
+            platform=self.platform,
         )
 
 
@@ -86,8 +105,11 @@ def get_service_factory(
     llm: StructuredLLM = Depends(get_structured_llm),
     settings: AISettings = Depends(get_assistant_settings),
     graph: CompiledStateGraph = Depends(get_supervisor_graph),
+    platform: Platform = Depends(get_platform),
 ) -> SupervisorServiceFactory:
-    return SupervisorServiceFactory(request=request, llm=llm, settings=settings, graph=graph)
+    return SupervisorServiceFactory(
+        request=request, llm=llm, settings=settings, graph=graph, platform=platform
+    )
 
 
 def get_supervisor_service(

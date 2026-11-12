@@ -9,17 +9,16 @@ conversations, device actions, and streaming.
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
+import re
 from datetime import datetime
 
 import pytest
 from httpx import AsyncClient
 
-from app.agents_platform.api.deps import get_db_scope
 from app.ai.config import LLMRole
 from app.core.config import settings
-from app.modules.assistant.actions.deps import get_command_publisher
-from app.modules.assistant.actions.publisher import RecordingPublisher
+from app.agents_platform.agents.device_action.deps import get_command_publisher
+from app.agents_platform.agents.device_action.publisher import RecordingPublisher
 from app.modules.assistant.deps import get_structured_llm
 from main import app
 from tests.assistant_helpers import TZ, FakeStructuredLLM, auth_headers, ingest, make_tick
@@ -39,18 +38,6 @@ def fake_llm(client: AsyncClient) -> FakeStructuredLLM:
     fake = FakeStructuredLLM()
     app.dependency_overrides[get_structured_llm] = lambda: fake
     return fake
-
-
-@pytest.fixture
-def db_scope(db_session):
-    """Streaming opens its own database scope; in tests that scope is the test transaction."""
-
-    @asynccontextmanager
-    async def scope():
-        yield db_session
-        await db_session.flush()
-
-    app.dependency_overrides[get_db_scope] = lambda: scope
 
 
 @pytest.fixture
@@ -122,6 +109,40 @@ async def test_v2_answers_a_home_question_the_way_v1_does(client, fake_llm, ques
     assert v2["meta"]["llm_used"] is True and v1["meta"]["llm_used"] is True
     assert v2["route"] == "single" and [a["agent"] for a in v2["agents"]] == ["energy_insight"]
     assert v2["meta"]["usage"]["total_tokens"] == v1["meta"]["usage"]["total_tokens"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        BATTERY_Q,
+        "How much solar did I generate today?",
+        "Should I run the washing machine now?",
+        "How long can the battery power my home?",
+        "Give me a full report on my home",
+    ],
+)
+async def test_v2_sends_the_model_exactly_the_prompt_v1_sends(client, fake_llm, question):
+    """
+    The strongest parity check there is, and free. Same data, same question: if the prompt is identical then any
+    difference between two real-model answers is sampling, not a difference between v1 and v2. A real-model run once
+    showed different wording across the endpoints; this test is what showed it was not v2.
+    """
+    headers, _, _ = await _home(client, f"prompt-parity-{abs(hash(question))}@example.com")
+
+    def sent() -> list:
+        # The two requests run a moment apart, so the data's age differs by a second or so. Nothing else may.
+        return [
+            (role, [(m.type, re.sub(r'"age_seconds":\d+', '"age_seconds":N', str(m.content))) for m in messages])
+            for role, _, messages in fake_llm.calls
+        ]
+
+    await ask_v1(client, headers, question)
+    v1 = sent()
+    fake_llm.calls.clear()
+    await ask_v2(client, headers, question)
+    v2 = sent()
+
+    assert v1 and v1 == v2
 
 
 async def test_v2_matches_v1_when_there_is_no_telemetry(client, fake_llm):

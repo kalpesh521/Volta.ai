@@ -20,6 +20,7 @@ class LLMRole(StrEnum):
 
     ROUTER = "router"
     ANSWER = "answer"
+    GUARD = "guard"  # grey-zone input classifier (Phase 2). Off unless AI_GUARD_CLASSIFIER_ENABLED.
 
 
 class ModelTarget(BaseModel):
@@ -46,6 +47,9 @@ class AISettings(BaseSettings):
     # Used when the primary provider errors or times out. Empty = no fallback.
     AI_FALLBACK_LLM_PROVIDER: str = ""
     AI_FALLBACK_LLM_MODEL: str = ""
+    # Guard model (grey-zone injection classifier). Empty = router model, then answer model.
+    AI_GUARD_LLM_PROVIDER: str = ""
+    AI_GUARD_LLM_MODEL: str = ""
 
     AI_LLM_TEMPERATURE: float = 0.1
     AI_LLM_MAX_OUTPUT_TOKENS: int = 800
@@ -111,13 +115,63 @@ class AISettings(BaseSettings):
     # Conversations idle longer than this are deleted together with their checkpoints.
     AI_CONVERSATION_RETENTION_DAYS: int = 30
 
+    # --- Guardrails (Phase 2) ---
+    # Input guard: normalise, score for injection, mask personal data. `off` skips all of it.
+    AI_GUARD_MODE: Literal["off", "observe", "enforce"] = "enforce"
+    # Fast-path score (0..1) at or above which an input is refused, and the grey zone below it.
+    AI_GUARD_BLOCK_SCORE: float = 0.8
+    AI_GUARD_GREY_SCORE: float = 0.4
+    # Grey-zone inputs are sent to the guard model when true. Costs one small call per grey input.
+    AI_GUARD_CLASSIFIER_ENABLED: bool = False
+    # Repeated blocked inputs from one user lead to a cool-down that doubles with each further block.
+    AI_GUARD_STRIKE_LIMIT: int = 3
+    AI_GUARD_STRIKE_WINDOW_SECONDS: int = 600
+    AI_GUARD_COOLDOWN_BASE_SECONDS: int = 60
+    AI_GUARD_COOLDOWN_MAX_SECONDS: int = 3600
+    # Personal data typed into the chat. `enforce` masks it before the model or a checkpoint sees it.
+    AI_PII_MODE: Literal["off", "observe", "enforce"] = "enforce"
+    # memory = per process (mask and restore happen in one request, so this is correct for one API pod).
+    # redis = AES-GCM encrypted, shared (needed once masking and restoring run in different processes).
+    AI_PII_VAULT_BACKEND: Literal["memory", "redis"] = "memory"
+    AI_PII_VAULT_KEY: SecretStr | None = None  # urlsafe base64 of 32 bytes. Required for the redis vault.
+    AI_PII_VAULT_TTL_SECONDS: int = 900
+    # Output checks beyond grounding: claims of acting on a device, unsafe electrical advice.
+    AI_OUTPUT_POLICY_MODE: Literal["off", "observe", "enforce"] = "enforce"
+
+    # Where budgets, abuse cool-downs and runtime flag overrides live.
+    # memory = per process: development and tests. redis = shared by every API pod (use this in production).
+    AI_PLATFORM_STORE: Literal["memory", "redis"] = "memory"
+    # Redis for those stores. Empty = REDIS_URL. Use another database index than the live-telemetry one.
+    AI_REDIS_URL: str = ""
+
+    # --- Token budgets (Phase 2) ---
+    AI_BUDGET_ENABLED: bool = True
+    # Tokens per user per UTC day, by plan tier. A typical question uses 150 to 2,000.
+    AI_BUDGET_DAILY_TOKENS_FREE: int = 30_000
+    AI_BUDGET_DAILY_TOKENS_PLUS: int = 200_000
+    # degrade = keep answering from deterministic facts without the model; reject = 429 until the next UTC day.
+    AI_BUDGET_EXHAUSTED_ACTION: Literal["degrade", "reject"] = "degrade"
+
+    # --- Feature flags, kill switches, registry (Phase 2) ---
+    # Comma-separated flags forced off at startup, e.g. "ai.llm.enabled,ai.agent.knowledge.enabled".
+    # A runtime override in Redis (set through the admin endpoint) wins over this list.
+    AI_FLAGS_DISABLED: str = ""
+    # Which registered prompt version each prompt uses. Empty = the registry's default for that prompt.
+    AI_PROMPT_ANSWER_VERSION: str = ""
+    AI_PROMPT_ROUTER_VERSION: str = ""
+
     LANGSMITH_TRACING: bool = False
     LANGSMITH_API_KEY: SecretStr | None = None
     LANGSMITH_PROJECT: str = "suryaa-assistant"
     LANGSMITH_ENDPOINT: str = ""
 
     def target(self, role: LLMRole) -> ModelTarget:
-        if role is LLMRole.ROUTER and self.AI_ROUTER_LLM_MODEL.strip():
+        if role is LLMRole.GUARD and self.AI_GUARD_LLM_MODEL.strip():
+            return ModelTarget(
+                provider=(self.AI_GUARD_LLM_PROVIDER or self.AI_LLM_PROVIDER).strip(),
+                model=self.AI_GUARD_LLM_MODEL.strip(),
+            )
+        if role in (LLMRole.ROUTER, LLMRole.GUARD) and self.AI_ROUTER_LLM_MODEL.strip():
             return ModelTarget(
                 provider=(self.AI_ROUTER_LLM_PROVIDER or self.AI_LLM_PROVIDER).strip(),
                 model=self.AI_ROUTER_LLM_MODEL.strip(),

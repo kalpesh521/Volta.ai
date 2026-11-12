@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 
+from app.agents_platform.api.admin import router as supervisor_admin_router
 from app.agents_platform.api.router import router as supervisor_router
 from app.ai.checkpointer import checkpointer_provider
 from app.ai.config import ai_settings
@@ -23,7 +24,7 @@ from app.core.metrics import metrics_endpoint
 from app.core.rate_limit import limiter
 from app.core.request_context import REQUEST_ID_HEADER, RequestContextMiddleware
 from app.core.telemetry import configure_telemetry, shutdown_telemetry
-from app.modules.assistant.actions.router import router as action_router
+from app.agents_platform.agents.device_action.router import router as action_router
 from app.modules.assistant.ops.router import router as home_ops_router
 from app.modules.assistant.router import router as assistant_router
 from app.modules.knowledge.router import router as knowledge_router
@@ -60,6 +61,11 @@ async def lifespan(app: FastAPI):
             logger.warning(
                 "RATE_LIMIT_STORAGE_URI is empty: rate limits are per process, not shared across replicas"
             )
+        if ai_settings.AI_PLATFORM_STORE != "redis":
+            logger.warning(
+                "AI_PLATFORM_STORE is not 'redis': token budgets, cool-downs and kill-switch overrides are per "
+                "process and are not shared across replicas"
+            )
     if settings.ENVIRONMENT.lower() == "production":
         token = (settings.INGEST_TOKEN or "").strip()
         if token in _UNSAFE_INGEST_TOKENS:
@@ -73,6 +79,12 @@ async def lifespan(app: FastAPI):
             )
 
     configure_tracing(ai_settings)
+
+    # Build the guardrails, budgets, flags and registries now: a bad flag name, prompt version or vault key
+    # stops the process at boot instead of failing the first request that uses it.
+    from app.agents_platform.api.deps import get_platform
+
+    get_platform()
 
     # Tables are created by the migration job in production; elsewhere the API creates them.
     await checkpointer_provider.start(ai_settings, auto_setup=not _is_production())
@@ -109,10 +121,15 @@ async def lifespan(app: FastAPI):
     yield
 
     from app.agents_platform.api.deps import get_supervisor_graph
-    from app.modules.assistant.actions.deps import get_action_graph
+    from app.agents_platform.agents.device_action.deps import get_action_graph
+
+    from app.agents_platform.api.deps import get_platform as _get_platform
+    from app.agents_platform.infra.redis import get_redis_provider
 
     get_action_graph.cache_clear()
     get_supervisor_graph.cache_clear()
+    _get_platform.cache_clear()
+    await get_redis_provider().close()
     await checkpointer_provider.stop()
     shutdown_telemetry()
 
@@ -159,6 +176,7 @@ app.include_router(notification_ws_router)  # /ws/notifications
 app.include_router(assistant_router)    # /assistant/*  read-only AI assistant
 app.include_router(action_router)       # /assistant/actions/*  confirm before any command
 app.include_router(supervisor_router)   # /v2/assistant/*  supervisor + specialist agents, conversation memory
+app.include_router(supervisor_admin_router)  # /v2/assistant/admin/*  kill switches and platform status (admins)
 app.include_router(home_ops_router)     # recommendations, alerts, automation rules
 app.include_router(knowledge_router)    # /knowledge/*  admin and user documents
 app.include_router(webui_router)        # /ui  temporary energy HTML (not production)

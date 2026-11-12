@@ -70,7 +70,7 @@ GROUNDING_CHECKS = Counter(
 AGENT_RUNS = Counter(
     "volta_agent_runs_total",
     "Specialist agent runs inside the supervisor.",
-    ["agent", "status"],  # status: ok | partial | refused | error | timeout
+    ["agent", "status"],  # status: ok | partial | refused | error | timeout | disabled
 )
 AGENT_SECONDS = Histogram(
     "volta_agent_latency_seconds",
@@ -87,6 +87,46 @@ SUPERVISOR_REGENERATIONS = Counter(
     "volta_supervisor_regenerations_total",
     "Answers regenerated once after failing the numeric grounding check.",
     ["outcome"],  # recovered | fell_back
+)
+# --- Guardrails, budgets and kill switches (Phase 2) ---
+GUARD_DECISIONS = Counter(
+    "volta_guard_decisions_total",
+    "Input guard verdicts. `observed_*` means the verdict was recorded but not enforced.",
+    ["stage", "decision"],  # stage: fast | classifier; decision: allow | review | block | observed_block
+)
+PII_ENTITIES = Counter(
+    "volta_pii_entities_total",
+    "Personal-data entities found, by class and where.",
+    ["pii_class", "where"],  # where: input | output
+)
+OUTPUT_VIOLATIONS = Counter(
+    "volta_output_violations_total",
+    "Model answers withheld or changed by an output guard.",
+    ["kind"],  # action_claim | unsafe_advice
+)
+POLICY_DENIALS = Counter(
+    "volta_policy_denials_total",
+    "Tool calls refused because the agent is not allowed to use that tool.",
+    ["agent", "tool"],
+)
+BUDGET_EVENTS = Counter(
+    "volta_budget_events_total",
+    "Token budget outcomes per request.",
+    ["tier", "outcome"],  # ok | degraded | rejected | store_error
+)
+BUDGET_TOKENS = Counter(
+    "volta_budget_tokens_debited_total",
+    "Tokens debited from user budgets.",
+    ["tier"],
+)
+COOLDOWNS = Counter(
+    "volta_guard_cooldowns_total",
+    "Cool-downs started after repeated blocked inputs.",
+)
+KILL_SWITCH_HITS = Counter(
+    "volta_kill_switch_hits_total",
+    "Requests affected by a disabled feature flag.",
+    ["flag"],
 )
 ACTION_PROPOSALS = Counter(
     "volta_action_proposals_total",

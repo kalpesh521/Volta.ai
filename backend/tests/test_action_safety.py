@@ -2,10 +2,10 @@
 from datetime import datetime
 
 from app.core.config import settings
-from app.modules.assistant.actions.deps import get_command_publisher
-from app.modules.assistant.actions.publisher import RecordingPublisher
-from app.modules.assistant.actions.safety import ActionFacts, evaluate_action
-from app.modules.assistant.actions.worker import handle_device_command
+from app.agents_platform.agents.device_action.deps import get_command_publisher
+from app.agents_platform.agents.device_action.publisher import RecordingPublisher
+from app.agents_platform.agents.device_action.safety import ActionFacts, evaluate_action
+from app.agents_platform.agents.device_action.worker import handle_device_command
 from main import app
 from tests.assistant_helpers import TZ, auth_headers, ingest, make_tick
 from tests.onboarding_helpers import complete_hybrid_onboarding

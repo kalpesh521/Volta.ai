@@ -2,9 +2,9 @@
 from datetime import datetime
 
 from app.core.config import settings
-from app.modules.assistant.actions.deps import get_command_publisher
-from app.modules.assistant.actions.execution import command_payload, record_virtual_result
-from app.modules.assistant.actions.publisher import RecordingPublisher
+from app.agents_platform.agents.device_action.deps import get_command_publisher
+from app.agents_platform.agents.device_action.execution import command_payload, record_virtual_result
+from app.agents_platform.agents.device_action.publisher import RecordingPublisher
 from app.modules.assistant.domain.recommendations import (
     DeviceOption,
     HourPoint,
