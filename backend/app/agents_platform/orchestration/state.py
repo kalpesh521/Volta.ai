@@ -66,6 +66,8 @@ class SupervisorState(TypedDict, total=False):
     output_violations: list[str]
     confidence: str
     route: str
+    # The device command found beside a question ("explain and do"). Offered in the answer, never executed.
+    offered_command: str | None
 
 
 class AgentInput(TypedDict):
@@ -95,6 +97,7 @@ def per_turn_reset() -> dict[str, Any]:
         "output_violations": [],
         "confidence": "low",
         "route": "",
+        "offered_command": None,
     }
 
 

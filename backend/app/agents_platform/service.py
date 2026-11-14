@@ -25,14 +25,20 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agents_platform.agents.bill_tariff.agent import BillTariffAgent
 from app.agents_platform.agents.device_action.agent import ActionProposer, DeviceActionAgent
 from app.agents_platform.agents.energy_insight import EnergyInsightAgent
 from app.agents_platform.agents.insight_engine import InsightEngine
+from app.agents_platform.agents.forecast.agent import ForecastAgent
+from app.agents_platform.agents.forecast.weather import OpenMeteoWeather
 from app.agents_platform.agents.knowledge import KnowledgeAgent
+from app.agents_platform.agents.optimizer.agent import OptimizerAgent
+from app.agents_platform.agents.planning_data import AuthorizedData, GatewayPlanningData
 from app.agents_platform.api.admission import Admission, degraded_warning
 from app.agents_platform.api.schemas import BudgetOut, SupervisorResponse
 from app.agents_platform.contracts import AgentName
@@ -46,6 +52,7 @@ from app.agents_platform.orchestration.events import encode_sse
 from app.agents_platform.orchestration.runtime import SupervisorRuntime
 from app.agents_platform.orchestration.supervisor import RECURSION_LIMIT
 from app.agents_platform.platform import Platform
+from app.agents_platform.registry.entitlements import Entitlements
 from app.agents_platform.response import results_of, to_response
 from app.ai.config import AISettings
 from app.ai.llm.gated import GatedLLM
@@ -92,6 +99,12 @@ class _Prepared:
     request_id: str
     vault_used: bool
     lock_token: str
+
+
+@lru_cache
+def _open_meteo(timeout_seconds: float) -> OpenMeteoWeather:
+    """One client per process, so its cache is shared by every request (neighbouring homes share a weather cell)."""
+    return OpenMeteoWeather(timeout_seconds=timeout_seconds)
 
 
 class SupervisorService:
@@ -247,12 +260,14 @@ class SupervisorService:
             if admission.llm_allowed
             else GatedLLM(self._llm, reason=admission.degraded_reason or "disabled")
         )
+        entitlements = self._platform.entitlements.for_tier(admission.tier)
         runtime = SupervisorRuntime(
-            agents=self._build_agents(system, user_id, request_id, llm),
+            agents=self._build_agents(system, user_id, request_id, llm, entitlements),
             llm=llm,
             settings=self._settings,
             flags=admission.flags,
             prompts=self._platform.prompts,
+            entitlements=entitlements,
         )
         config = {
             "configurable": {"thread_id": ref.thread_id},
@@ -282,7 +297,7 @@ class SupervisorService:
         )
 
     def _build_agents(
-        self, system: SolarSystem, user_id: uuid.UUID, request_id: str, llm: StructuredLLM
+        self, system: SolarSystem, user_id: uuid.UUID, request_id: str, llm: StructuredLLM, entitlements: Entitlements
     ) -> dict[AgentName, Any]:
         gateway = EnergyDataGateway(self._energy, system)
         settings = self._settings
@@ -308,10 +323,32 @@ class SupervisorService:
             return AuthorizedTools(agent, tools)  # gate G5: only the tools this agent may use
 
         engine = InsightEngine(tools_for=tools_for, llm=llm, settings=settings, now=self._clock)
+        planning_data = GatewayPlanningData(gateway)  # one household, read-only; each agent sees only its scopes
         return {
             AgentName.ENERGY_INSIGHT: EnergyInsightAgent(engine, request_id=request_id),
             AgentName.KNOWLEDGE: KnowledgeAgent(engine, request_id=request_id),
             AgentName.DEVICE_ACTION: DeviceActionAgent(self._actions, system=system, user_id=user_id),
+            AgentName.FORECAST: ForecastAgent(
+                AuthorizedData(AgentName.FORECAST, planning_data),
+                now=self._clock,
+                stale_threshold_seconds=settings.AI_STALE_DATA_SECONDS,
+                weather=lambda: _open_meteo(settings.AI_FORECAST_WEATHER_TIMEOUT_SECONDS)
+                if settings.AI_FORECAST_WEATHER_ENABLED
+                else None,
+            ),
+            AgentName.OPTIMIZER: OptimizerAgent(
+                AuthorizedData(AgentName.OPTIMIZER, planning_data),
+                now=self._clock,
+                stale_threshold_seconds=settings.AI_STALE_DATA_SECONDS,
+                weather=lambda: _open_meteo(settings.AI_FORECAST_WEATHER_TIMEOUT_SECONDS)
+                if settings.AI_FORECAST_WEATHER_ENABLED
+                else None,
+            ),
+            AgentName.BILL_TARIFF: BillTariffAgent(
+                AuthorizedData(AgentName.BILL_TARIFF, planning_data),
+                now=self._clock,
+                what_if_allowed=entitlements.what_if_allowed,
+            ),
         }
 
     async def _finish(

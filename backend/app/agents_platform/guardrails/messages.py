@@ -16,6 +16,7 @@ class Refusal(StrEnum):
     SENSITIVE_DATA = "sensitive_data"
     INPUT_UNVERIFIED = "input_unverified"
     FEATURE_DISABLED = "feature_disabled"
+    PLAN_REQUIRED = "plan_required"
 
 
 _PARTS: dict[Refusal, AnswerParts] = {
@@ -44,6 +45,12 @@ _PARTS: dict[Refusal, AnswerParts] = {
         observation="That part of the assistant is temporarily switched off.",
         explanation="It was paused by the Suryaa team and nothing is wrong with your home or your request.",
         recommendation="Please try again later.",
+        estimated_impact="None. Nothing was changed.",
+    ),
+    Refusal.PLAN_REQUIRED: AnswerParts(
+        observation="That feature is part of the Plus plan.",
+        explanation="Your question was understood, and nothing is wrong with your home or your request.",
+        recommendation="Upgrade to Plus to use it. Everything else in the assistant still works on your current plan.",
         estimated_impact="None. Nothing was changed.",
     ),
 }

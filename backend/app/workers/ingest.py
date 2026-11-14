@@ -1,9 +1,10 @@
 """
 Telemetry ingest worker.
 
-Consumes RabbitMQ, validates JSON, writes TimescaleDB, updates Redis, then ACKs.
-Poison payloads go to the DLQ. Timescale failures requeue. Redis failures are
-logged; history is already durable so the message is still ACK'd.
+Consumes RabbitMQ, validates JSON, writes TimescaleDB in batches, then ACKs the batch and updates
+Redis. Safe to run as any number of replicas on the one queue (competing consumers): see
+`app.workers.ingest_batch` for the delivery contract (ack after commit, duplicate-safe upserts,
+poison to the DLQ, transient failures requeued, SIGTERM flushes the buffered batch).
 
 Run from backend/:
 
@@ -14,8 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-import time
-from datetime import datetime, timezone
 
 import aio_pika
 from aio_pika import ExchangeType
@@ -23,16 +22,13 @@ from aio_pika.abc import AbstractIncomingMessage
 
 from app.core.config import settings
 from app.core.logging_config import configure_logging
-from app.core.metrics import (
-    INGEST_MESSAGE_AGE_SECONDS,
-    INGEST_MESSAGES,
-    INGEST_SECONDS,
-    start_worker_metrics_server,
-)
-from app.core.telemetry import configure_telemetry, consumer_span, shutdown_telemetry
-from app.modules.energy.pipeline import process_telemetry_body
+from app.core.metrics import start_worker_metrics_server
+from app.core.telemetry import configure_telemetry, shutdown_telemetry
 from app.modules.energy.redis_live import RedisLiveStore
 from app.modules.energy.timescale_store import TimescaleTelemetryStore
+from app.workers.ingest_batch import BatchSettings, IngestBatcher
+from app.workers.queue_lag import QueueLagReporter, broker_fetch
+from app.workers.timescale_batch import BatchingTimescaleStore
 
 logger = logging.getLogger("volta.ingest")
 
@@ -88,74 +84,25 @@ async def handle_message(
     timescale: TimescaleTelemetryStore,
     redis_live: RedisLiveStore | None,
 ) -> None:
-    """Process one tick inside a span that continues the producer's trace, when it sent one."""
-    with consumer_span(
-        "ingest.process",
-        message.headers,
-        **{"messaging.system": "rabbitmq", "messaging.destination.name": settings.RABBITMQ_QUEUE},
-    ):
-        with INGEST_SECONDS.time():
-            await _process(
-                message, tolerance_kw=tolerance_kw, timescale=timescale, redis_live=redis_live
-            )
+    """
+    Process one message on its own: a batch of one. Kept for single-message callers and tests; the
+    worker itself feeds every delivery to one shared `IngestBatcher`. Same semantics: validate in a
+    span that continues the producer's trace, write, ack, then publish the live snapshot.
+    """
 
+    async def write_each(records) -> None:
+        for record in records:
+            await timescale.upsert(record)
 
-async def _process(
-    message: AbstractIncomingMessage,
-    *,
-    tolerance_kw: float,
-    timescale: TimescaleTelemetryStore,
-    redis_live: RedisLiveStore | None,
-) -> None:
-    try:
-        decision = process_telemetry_body(message.body, tolerance_kw)
-        if decision.action == "reject" or decision.record is None:
-            logger.warning("dead-letter telemetry: %s", decision.reason)
-            INGEST_MESSAGES.labels(outcome="rejected").inc()
-            await message.reject(requeue=False)
-            return
-
-        record = decision.record
-        await timescale.upsert(record)
-        if redis_live is not None:
-            try:
-                await redis_live.set_and_publish(record)
-            except Exception:
-                logger.exception(
-                    "redis live update failed household=%s (tick stored in Timescale)",
-                    record.household_id,
-                )
-
-        await message.ack()
-        INGEST_MESSAGES.labels(outcome="stored").inc()
-        INGEST_MESSAGE_AGE_SECONDS.observe(_age_seconds(record.timestamp))
-        if record.energy_balance_status != "valid":
-            logger.warning(
-                "ingested household=%s ts=%s with energy-balance warning error_kw=%s",
-                record.household_id,
-                record.timestamp.isoformat(),
-                record.energy_balance_error_kw,
-            )
-        else:
-            logger.info(
-                "ingested household=%s ts=%s solar_kw=%s",
-                record.household_id,
-                record.timestamp.isoformat(),
-                record.solar_power_kw,
-            )
-    except Exception:
-        logger.exception("ingest failed, requeue")
-        INGEST_MESSAGES.labels(outcome="requeued").inc()
-        try:
-            await message.nack(requeue=True)
-        except Exception:
-            pass
-
-
-def _age_seconds(timestamp: datetime) -> float:
-    """Seconds between the tick's own timestamp and now. Never negative."""
-    stamp = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc)
-    return max(0.0, time.time() - stamp.timestamp())
+    batcher = IngestBatcher(
+        write_many=write_each,
+        tolerance_kw=tolerance_kw,
+        batch=BatchSettings(batch_size=1, max_buffer=1, backoff_base_seconds=0.0),
+        live_publish=redis_live.set_and_publish if redis_live is not None else None,
+    )
+    batcher.start()
+    await batcher.submit(message)
+    await batcher.drain(timeout=settings.INGEST_WRITE_TIMEOUT_SECONDS + 5)
 
 
 async def run() -> None:
@@ -167,7 +114,7 @@ async def run() -> None:
     configure_telemetry(settings, service_name="volta-ingest-worker")
     start_worker_metrics_server(settings.WORKER_METRICS_PORT)
 
-    timescale = TimescaleTelemetryStore()
+    timescale = BatchingTimescaleStore()
     await timescale.connect()
     await timescale.ensure_schema()
 
@@ -179,11 +126,15 @@ async def run() -> None:
         logger.exception("Redis unavailable — worker will persist history only")
         redis_live = None
 
+    batch = BatchSettings.from_app_settings()
     logger.info(
-        "ingest worker connecting exchange=%s queue=%s dlq=%s",
+        "ingest worker connecting exchange=%s queue=%s dlq=%s prefetch=%d batch_size=%d batch_max_age=%.2fs",
         settings.RABBITMQ_EXCHANGE,
         settings.RABBITMQ_QUEUE,
         settings.RABBITMQ_DLQ,
+        settings.RABBITMQ_PREFETCH,
+        batch.batch_size,
+        batch.max_age_seconds,
     )
 
     connection = await aio_pika.connect_robust(
@@ -193,34 +144,43 @@ async def run() -> None:
     channel = await connection.channel()
     await channel.set_qos(prefetch_count=max(1, settings.RABBITMQ_PREFETCH))
     queue = await declare_topology(channel)
-    logger.info("ingest worker consuming %s (Ctrl+C to stop)", queue.name)
+
+    batcher = IngestBatcher(
+        write_many=timescale.upsert_many,
+        tolerance_kw=settings.ENERGY_BALANCE_TOLERANCE_KW,
+        batch=batch,
+        live_publish=redis_live.set_and_publish if redis_live is not None else None,
+    )
+    batcher.start()
 
     stop = asyncio.Event()
-
-    def _request_stop() -> None:
-        stop.set()
-
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, _request_stop)
+            loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
             pass
 
-    async def _on_message(message: AbstractIncomingMessage) -> None:
-        await handle_message(
-            message,
-            tolerance_kw=settings.ENERGY_BALANCE_TOLERANCE_KW,
-            timescale=timescale,
-            redis_live=redis_live,
-        )
+    lag_task = asyncio.create_task(
+        QueueLagReporter(broker_fetch(connection, settings.RABBITMQ_QUEUE), settings.INGEST_LAG_POLL_SECONDS).run(stop),
+        name="ingest-queue-lag",
+    )
 
-    consumer_tag = await queue.consume(_on_message)
+    consumer_tag = await queue.consume(batcher.submit)
+    logger.info("ingest worker consuming %s (SIGTERM or Ctrl+C to stop)", queue.name)
     try:
         await stop.wait()
     finally:
-        logger.info("ingest worker shutting down")
-        await queue.cancel(consumer_tag)
+        logger.info("ingest worker shutting down: no new messages, flushing the buffered batch")
+        try:
+            await queue.cancel(consumer_tag)
+        except Exception:
+            logger.warning("could not cancel the consumer cleanly", exc_info=True)
+        # Deliveries already on their way are still handed to submit(); drain() flushes them too.
+        clean = await batcher.drain(settings.INGEST_SHUTDOWN_TIMEOUT_SECONDS)
+        logger.info("ingest worker drain %s", "complete" if clean else "incomplete (unflushed ticks were requeued)")
+        lag_task.cancel()
+        await asyncio.gather(lag_task, return_exceptions=True)
         await connection.close()
         await timescale.close()
         if redis_live is not None:

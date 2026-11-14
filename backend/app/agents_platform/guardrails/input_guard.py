@@ -27,7 +27,7 @@ from typing import Any
 
 from app.agents_platform.guardrails.injection import InjectionScore, score_text
 from app.agents_platform.guardrails.messages import Refusal
-from app.agents_platform.guardrails.normalize import normalize
+from app.agents_platform.guardrails.normalize import NormalizedText, deleet, normalize
 from app.agents_platform.guardrails.pii import masker
 from app.ai.config import AISettings
 from app.core.metrics import GUARD_DECISIONS, PII_ENTITIES
@@ -83,11 +83,7 @@ class InputGuard:
             return GuardedInput(text=question)
 
         normalized = normalize(question)
-        injection = (
-            score_text(normalized.text, hidden_chars=normalized.invisible_removed)
-            if self._guard_mode != "off"
-            else InjectionScore(0.0, ())
-        )
+        injection = self._score(normalized) if self._guard_mode != "off" else InjectionScore(0.0, ())
         masking = masker.mask(normalized.text) if self._pii_mode != "off" else None
         counts = dict(masking.counts) if masking else {}
         for cls, n in counts.items():
@@ -129,6 +125,16 @@ class InputGuard:
             pii_counts=counts,
             tokens=applied.tokens if applied else {},
         )
+
+    @staticmethod
+    def _score(normalized: NormalizedText) -> InjectionScore:
+        """Score the text as written, and a leetspeak-folded copy ("1gn0re"); the stronger reading counts."""
+        plain = score_text(normalized.text, hidden_chars=normalized.invisible_removed)
+        folded_text, changed = deleet(normalized.text)
+        if not changed:
+            return plain
+        folded = score_text(folded_text, hidden_chars=normalized.invisible_removed)
+        return folded if folded.score > plain.score else plain
 
     @staticmethod
     def _record(

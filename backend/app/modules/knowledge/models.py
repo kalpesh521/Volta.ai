@@ -10,7 +10,20 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    false,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -49,6 +62,9 @@ class KnowledgeDocument(Base):
     embedding_model: Mapped[str] = mapped_column(String(80), nullable=False)
     page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Ingest-side safety summary, shown to the reviewer (tracker 3.8).
+    quarantined_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    masked_value_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=_utcnow, nullable=False
     )
@@ -81,6 +97,11 @@ class KnowledgeChunk(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # Ingest-side safety (tracker 3.8): the injection score of the original text, whether the chunk is withheld
+    # from retrieval, and how many personal values were masked in `content`.
+    risk_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    quarantined: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    masked_values: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=_utcnow, nullable=False
     )

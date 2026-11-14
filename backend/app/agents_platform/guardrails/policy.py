@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator, Mapping
+from enum import StrEnum
 from typing import TypeVar
 
 from app.agents_platform.contracts import AgentName
@@ -29,7 +30,42 @@ AGENT_TOOLS: Mapping[AgentName, frozenset[ToolName]] = {
     AgentName.ENERGY_INSIGHT: frozenset(ToolName),
     AgentName.KNOWLEDGE: frozenset({ToolName.SEARCH_KNOWLEDGE, ToolName.HOUSEHOLD_PROFILE}),
     AgentName.DEVICE_ACTION: frozenset(),
+    # Planning agents read through the data port below (a scope list), not through the LLM-facing tools.
+    AgentName.FORECAST: frozenset(),
+    AgentName.OPTIMIZER: frozenset(),
+    AgentName.BILL_TARIFF: frozenset(),
 }
+
+
+class DataScope(StrEnum):
+    """What a planning agent may read from the household's data port."""
+
+    LIVE = "live"
+    HISTORY = "history"
+    PROFILE = "profile"
+
+
+# The second half of G5 for agents that compute instead of calling tools: each may read only what its job needs.
+AGENT_DATA: Mapping[AgentName, frozenset[DataScope]] = {
+    AgentName.FORECAST: frozenset({DataScope.LIVE, DataScope.HISTORY, DataScope.PROFILE}),
+    AgentName.OPTIMIZER: frozenset({DataScope.LIVE, DataScope.HISTORY, DataScope.PROFILE}),
+    AgentName.BILL_TARIFF: frozenset({DataScope.HISTORY, DataScope.PROFILE}),
+}
+
+
+class DataForbiddenError(PermissionError):
+    def __init__(self, agent: AgentName, scope: DataScope) -> None:
+        super().__init__(f"agent {agent.value} may not read {scope.value} data")
+        self.agent = agent
+        self.scope = scope
+
+
+def require_scope(agent: AgentName, scope: DataScope) -> None:
+    """Raise, count and log when `agent` may not read `scope`. Same treatment as a forbidden tool."""
+    if scope not in AGENT_DATA.get(agent, frozenset()):
+        POLICY_DENIALS.labels(agent=agent.value, tool=f"data:{scope.value}").inc()
+        logger.warning("data denied agent=%s scope=%s", agent.value, scope.value)
+        raise DataForbiddenError(agent, scope)
 
 
 class ToolForbiddenError(PermissionError):

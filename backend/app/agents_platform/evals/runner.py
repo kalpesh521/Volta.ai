@@ -34,6 +34,7 @@ from app.agents_platform.evals.stubs import ScriptedLLM, default_stub_agents
 from app.agents_platform.guardrails.classifier import InjectionVerdict
 from app.agents_platform.guardrails.input_guard import InputGuard
 from app.agents_platform.orchestration import nodes
+from app.agents_platform.orchestration.explain_and_do import offer_text
 from app.agents_platform.orchestration.runtime import SupervisorRuntime
 from app.agents_platform.orchestration.supervisor import build_supervisor
 from app.ai.config import AISettings, LLMRole
@@ -153,6 +154,11 @@ def _check(
     decision = (final.get("guard") or {}).get("decision")
     if turn.guard is not None and decision != turn.guard:
         failures.append(f"guard: expected {turn.guard}, got {decision}")
+    if turn.offer is not None:
+        if final.get("offered_command") != turn.offer:
+            failures.append(f"offer: expected {turn.offer!r}, got {final.get('offered_command')!r}")
+        elif offer_text(turn.offer) not in (final.get("answer") or {}).get("recommendation", ""):
+            failures.append("offer: the command was recognised but the answer does not offer it")
     if turn.llm_guard_calls is not None and guards != turn.llm_guard_calls:
         failures.append(f"guard calls: expected {turn.llm_guard_calls}, got {guards}")
 

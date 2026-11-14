@@ -7,6 +7,7 @@ import logging
 import httpx
 
 from simulator.models import TelemetryRecord
+from simulator.tracing import TRACEPARENT_HEADER, new_traceparent
 
 logger = logging.getLogger("suryaa.ingest")
 
@@ -24,7 +25,14 @@ class IngestClient:
     Failures are logged and rate-limited so 1 Hz dashboard mode does not flood.
     """
 
-    def __init__(self, url: str, token: str, timeout_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        timeout_seconds: float = 3.0,
+        trace_sample_ratio: float | None = None,
+    ) -> None:
+        self.trace_sample_ratio = trace_sample_ratio
         self.url = resolve_ingest_url(url)
         self.token = token.strip()
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
@@ -35,11 +43,7 @@ class IngestClient:
             response = await self._client.post(
                 self.url,
                 json=record.model_dump(mode="json"),
-                headers={
-                    "X-Ingest-Token": self.token,
-                    "Content-Type": "application/json",
-                    "User-Agent": "suryaa-simulator/1.0",
-                },
+                headers=self._headers(),
             )
             if response.status_code >= 400:
                 self._note_failure(
@@ -51,6 +55,16 @@ class IngestClient:
             self._fail_count = 0
         except httpx.HTTPError as exc:
             self._note_failure(str(exc))
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "X-Ingest-Token": self.token,
+            "Content-Type": "application/json",
+            "User-Agent": "suryaa-simulator/1.0",
+        }
+        if self.trace_sample_ratio is not None:
+            headers[TRACEPARENT_HEADER] = new_traceparent(self.trace_sample_ratio)
+        return headers
 
     def _note_failure(self, detail: str) -> None:
         self._fail_count += 1

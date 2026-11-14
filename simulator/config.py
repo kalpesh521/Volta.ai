@@ -250,6 +250,11 @@ class SimulatorConfig(BaseSettings):
     rabbitmq_exchange: str = "telemetry"
     rabbitmq_routing_key: str = "telemetry.ingest"
     rabbitmq_publish_timeout_seconds: float = 3.0
+    # Send a W3C `traceparent` (and a matching x-request-id) with every tick so traces start at the source.
+    # The ratio is the share of ticks flagged "sampled"; the backend records only those (its own sampler is
+    # parent-based). 1.0 matches the backend default. Lower it for a fast tick rate.
+    trace_propagation_enabled: bool = True
+    trace_sample_ratio: float = 1.0
     device_command_exchange: str = "device.commands"
     device_command_queue: str = "simulator.device.commands"
     device_command_routing_key: str = "device.command"

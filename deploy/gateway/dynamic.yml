@@ -1,0 +1,94 @@
+# Traefik DYNAMIC configuration: routing, coarse limits and security headers (Phase 5.3).
+# Development defaults; see traefik.yml and docs/multi-agent/17-phase5-operations.md.
+#
+# What the edge does, and what it deliberately does not:
+#   - Routes /api/* to the backend with the /api prefix stripped (the backend's own paths are unchanged:
+#     /api/auth/login -> /auth/login, /api/v2/assistant/me/ask -> /v2/assistant/me/ask).
+#   - A COARSE per-IP rate limit and a request-size cap. These protect the backend from floods and oversized
+#     bodies. They are not the product's limits: per-user and per-route limits (login 5/min, assistant,
+#     knowledge 30/min, token budgets) stay in the backend, which knows who the user is.
+#   - Security headers on every response.
+
+http:
+  routers:
+    # Streaming routes (server-sent events and WebSockets) skip the buffering middleware: it would hold
+    # the whole response back and break streaming. They keep the rate limit and the headers.
+    api-streaming:
+      entryPoints: [web, websecure]
+      rule: "PathRegexp(`^/api/(ws/.*|.*/stream)$`)"
+      priority: 200
+      middlewares: [security-headers, edge-rate-limit, strip-api-prefix]
+      service: backend
+
+    api:
+      entryPoints: [web, websecure]
+      rule: "PathPrefix(`/api`)"
+      priority: 100
+      middlewares: [security-headers, edge-rate-limit, edge-request-size, strip-api-prefix]
+      service: backend
+
+  middlewares:
+    strip-api-prefix:
+      stripPrefix:
+        prefixes: ["/api"]
+
+    # Coarse flood protection per client IP, per gateway instance (in memory: N gateway replicas allow N times
+    # this rate). 50 requests/second sustained with a burst of 100 is far above what one person generates
+    # (a dashboard polls a few times per minute) and far below what a script can send. Answers 429 with a plain
+    # body, not the API's JSON error shape.
+    #
+    # sourceCriterion: with the gateway directly facing clients, the connection's address is the client.
+    # Behind a cloud load balancer, set `ipStrategy.depth` to the number of trusted proxies in front.
+    edge-rate-limit:
+      rateLimit:
+        average: 50
+        period: 1s
+        burst: 100
+
+    # Request bodies over 20 MiB are refused with 413 before they reach Python. The largest legitimate body is a
+    # knowledge upload: KNOWLEDGE_MAX_UPLOAD_BYTES is 15 MiB, and multipart framing adds a little. Keep this above
+    # that setting. Only the first 1 MiB of a body is held in memory; the rest spills to disk inside the proxy
+    # (read_only compose rootfs: mounted as tmpfs, see docker-compose.yml).
+    edge-request-size:
+      buffering:
+        maxRequestBodyBytes: 20971520
+        memRequestBodyBytes: 1048576
+
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        referrerPolicy: "no-referrer"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+        # Sent on HTTPS responses only (browsers ignore it over HTTP). Turn includeSubdomains and preload on
+        # deliberately, once every subdomain is HTTPS.
+        stsSeconds: 31536000
+        stsIncludeSubdomains: false
+        stsPreload: false
+        customResponseHeaders:
+          # This edge only serves JSON and event streams: nothing in a response may be rendered or framed.
+          Content-Security-Policy: "default-src 'none'; frame-ancestors 'none'"
+          X-Powered-By: ""
+          Server: ""
+
+  services:
+    backend:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          # Compose service name. For several API replicas keep one entry: Docker DNS spreads connections.
+          - url: "http://api:8000"
+        healthCheck:
+          path: /health
+          interval: 10s
+          timeout: 3s
+
+# PLACEHOLDER for a real certificate. Mount the files into the gateway container (compose: a volume on
+# /certs), uncomment, and Traefik serves them on the websecure entrypoint instead of the self-signed default.
+# tls:
+#   certificates:
+#     - certFile: /certs/volta.crt
+#       keyFile: /certs/volta.key
+#   options:
+#     default:
+#       minVersion: VersionTLS12

@@ -9,6 +9,7 @@ import aio_pika
 from aio_pika import DeliveryMode, ExchangeType, Message
 
 from simulator.models import TelemetryRecord
+from simulator.tracing import trace_headers
 
 logger = logging.getLogger("suryaa.rabbitmq")
 
@@ -16,8 +17,13 @@ CONTENT_TYPE = "application/json"
 APP_ID = "suryaa-simulator"
 
 
-def build_message(record: TelemetryRecord) -> Message:
-    """Persistent JSON body matching TelemetryRecord. Worker validates on consume."""
+def build_message(record: TelemetryRecord, trace_sample_ratio: float | None = None) -> Message:
+    """
+    Persistent JSON body matching TelemetryRecord. Worker validates on consume.
+
+    `trace_sample_ratio` None sends no trace headers; a number sends a fresh W3C `traceparent` (and
+    `x-request-id`) for this message, flagged sampled with that probability.
+    """
     ts = record.timestamp
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
@@ -32,6 +38,7 @@ def build_message(record: TelemetryRecord) -> Message:
         headers={
             "household_id": record.household_id,
             "data_source": record.data_source,
+            **(trace_headers(trace_sample_ratio) if trace_sample_ratio is not None else {}),
         },
     )
 
@@ -49,7 +56,9 @@ class RabbitMQPublisher:
         exchange: str = "telemetry",
         routing_key: str = "telemetry.ingest",
         timeout_seconds: float = 3.0,
+        trace_sample_ratio: float | None = None,
     ) -> None:
+        self.trace_sample_ratio = trace_sample_ratio
         self.url = url.strip()
         self.exchange_name = exchange.strip() or "telemetry"
         self.routing_key = routing_key.strip() or "telemetry.ingest"
@@ -77,7 +86,7 @@ class RabbitMQPublisher:
                 await self.connect()
             assert self._exchange is not None
             await self._exchange.publish(
-                build_message(record),
+                build_message(record, self.trace_sample_ratio),
                 routing_key=self.routing_key,
                 timeout=self._timeout,
             )

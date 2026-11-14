@@ -27,7 +27,10 @@ ROUTER = "router"
 
 # name -> (versions in release order, default). The default is the version that has been measured.
 _REGISTERED: dict[str, tuple[tuple[str, ...], str]] = {
-    ANSWER: ((prompts.PROMPT_VERSION, prompts.PROMPT_VERSION_V5), prompts.PROMPT_VERSION),
+    ANSWER: (
+        (prompts.PROMPT_VERSION, prompts.PROMPT_VERSION_V5, prompts.PROMPT_VERSION_V6),
+        prompts.PROMPT_VERSION,
+    ),
     ROUTER: ((prompts.PROMPT_VERSION,), prompts.PROMPT_VERSION),
 }
 

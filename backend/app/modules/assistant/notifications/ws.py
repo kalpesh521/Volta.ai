@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.core.metrics import track_ws_connection
 from app.core.database import AsyncSessionLocal
-from app.agents_platform.agents.device_action.models import HomeNotification
+from app.modules.assistant.notifications.models import HomeNotification
 from app.modules.assistant.notifications.bus import iter_events, local_hub
 from app.modules.assistant.notifications.serialize import notification_out
 from app.modules.energy.ws import (

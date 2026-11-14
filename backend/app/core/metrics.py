@@ -11,11 +11,12 @@ The API serves `/metrics` when `METRICS_ENABLED`. Workers call
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 from fastapi import Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest, start_http_server
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram, generate_latest, start_http_server
 
 logger = logging.getLogger("volta.metrics")
 
@@ -43,6 +44,13 @@ WS_CONNECTIONS = Gauge(
     "volta_ws_connections",
     "Open WebSocket connections.",
     ["channel"],  # energy | notifications
+    multiprocess_mode="livesum",  # several uvicorn workers per pod: report the pod total
+)
+HTTP_IN_FLIGHT = Gauge(
+    "volta_http_requests_in_flight",
+    "HTTP requests being handled right now (streamed answers count until the stream ends). "
+    "The autoscaling signal for API pods: the work is mostly waiting on I/O, so CPU stays low.",
+    multiprocess_mode="livesum",
 )
 
 # --- Assistant ---
@@ -71,6 +79,11 @@ AGENT_RUNS = Counter(
     "volta_agent_runs_total",
     "Specialist agent runs inside the supervisor.",
     ["agent", "status"],  # status: ok | partial | refused | error | timeout | disabled
+)
+AGENT_RETRIES = Counter(
+    "volta_agent_retries_total",
+    "Extra attempts at a planning agent after a transient dependency failure.",
+    ["agent"],
 )
 AGENT_SECONDS = Histogram(
     "volta_agent_latency_seconds",
@@ -133,6 +146,30 @@ ACTION_PROPOSALS = Counter(
     "Device action proposals by resulting status.",
     ["status"],
 )
+AUTOMATION_FIRINGS = Counter(
+    "volta_automation_firings_total",
+    "Automation rule firings by what they did.",
+    ["action"],  # notify | suggest | paused
+)
+AUTOMATION_EVALUATIONS = Counter(
+    "volta_automation_evaluations_total",
+    "Readings evaluated against a home's active automation rules.",
+    ["outcome"],  # evaluated | no_rules | error
+)
+OUTBOX_DISPATCH = Counter(
+    "volta_device_outbox_dispatch_total",
+    "Device commands the outbox relay handled, by outcome.",
+    ["outcome"],  # sent | retry | dead | blocked | expired
+)
+OUTBOX_PENDING = Gauge(
+    "volta_device_outbox_pending",
+    "Device commands waiting in the outbox. A rising value means the relay or the broker is behind.",
+)
+OUTBOX_DELAY = Histogram(
+    "volta_device_outbox_delay_seconds",
+    "Time from a command being accepted to it reaching the broker.",
+    buckets=_LATENCY_BUCKETS,
+)
 
 
 @contextmanager
@@ -145,9 +182,23 @@ def track_ws_connection(channel: str) -> Iterator[None]:
         WS_CONNECTIONS.labels(channel=channel).dec()
 
 
+def _multiprocess_registry() -> CollectorRegistry | None:
+    """With several uvicorn workers (`python -m app.serve`) each process writes its metrics to files in
+    PROMETHEUS_MULTIPROC_DIR; a scrape must read all of them, whichever worker answers it."""
+    if not (os.environ.get("PROMETHEUS_MULTIPROC_DIR") or os.environ.get("prometheus_multiproc_dir")):
+        return None
+    from prometheus_client import multiprocess
+
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+    return registry
+
+
 async def metrics_endpoint() -> Response:
     """Prometheus text format. A plain route, so `/metrics` answers directly (no trailing-slash redirect)."""
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    registry = _multiprocess_registry()
+    body = generate_latest(registry) if registry is not None else generate_latest()
+    return Response(body, media_type=CONTENT_TYPE_LATEST)
 
 
 def start_worker_metrics_server(port: int) -> bool:

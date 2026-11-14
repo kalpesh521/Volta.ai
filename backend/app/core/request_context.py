@@ -18,6 +18,8 @@ from contextvars import ContextVar
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core.metrics import HTTP_IN_FLIGHT
+
 REQUEST_ID_HEADER = "X-Request-ID"
 
 # Printable, header-safe, bounded. Anything else is replaced, never trusted.
@@ -65,6 +67,10 @@ class RequestContextMiddleware:
         request_id = sanitize_request_id(Headers(scope=scope).get(REQUEST_ID_HEADER))
         scope.setdefault("state", {})["request_id"] = request_id
         token = _request_id.set(request_id)
+        # WebSockets are long-lived and counted by volta_ws_connections, not as requests in flight.
+        counted = scope["type"] == "http"
+        if counted:
+            HTTP_IN_FLIGHT.inc()
 
         async def send_with_id(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -74,6 +80,8 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_with_id)
         finally:
+            if counted:
+                HTTP_IN_FLIGHT.dec()
             _request_id.reset(token)
 
 

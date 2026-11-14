@@ -15,6 +15,7 @@ from app.agents_platform.guardrails.input_guard import InputGuard
 from app.agents_platform.guardrails.pii.vault import InMemoryVault, RedisVault, Vault, parse_key
 from app.agents_platform.infra.redis import RedisProvider, get_redis_provider
 from app.agents_platform.locks import ConversationLock, InMemoryConversationLock, RedisConversationLock
+from app.agents_platform.registry.entitlements import EntitlementRules
 from app.agents_platform.registry.flags import (
     FeatureFlags,
     FlagStore,
@@ -36,6 +37,7 @@ class Platform:
     flags: FeatureFlags
     prompts: ResolvedPrompts
     locks: ConversationLock
+    entitlements: EntitlementRules
 
 
 def _vault(settings: AISettings, provider: RedisProvider) -> Vault:
@@ -74,4 +76,5 @@ def build_platform(settings: AISettings, provider: RedisProvider | None = None) 
         flags=FeatureFlags(flag_store, baseline_disabled=parse_disabled(settings.AI_FLAGS_DISABLED)),
         prompts=resolve_prompts(settings),
         locks=RedisConversationLock(provider) if shared else InMemoryConversationLock(),
+        entitlements=EntitlementRules.from_settings(settings),  # a typo in the agent list stops startup
     )

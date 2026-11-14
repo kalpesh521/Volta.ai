@@ -14,6 +14,7 @@ from typing import Protocol
 from langchain_core.runnables import RunnableConfig
 
 from app.agents_platform.contracts import AgentCall, AgentName, AgentResult
+from app.agents_platform.registry.entitlements import Entitlements
 from app.agents_platform.registry.flags import FlagSnapshot
 from app.agents_platform.registry.prompts import ResolvedPrompts
 from app.ai.config import AISettings
@@ -36,10 +37,15 @@ class SupervisorRuntime:
     # What is switched on and which prompt versions run, resolved once per request.
     flags: FlagSnapshot = FlagSnapshot()
     prompts: ResolvedPrompts = ResolvedPrompts()
+    # What this user's plan allows. The default allows everything.
+    entitlements: Entitlements = Entitlements()
 
     def deadlines(self) -> dict[AgentName, float]:
         return {
             AgentName.ENERGY_INSIGHT: self.settings.AI_ENERGY_AGENT_DEADLINE_SECONDS,
             AgentName.KNOWLEDGE: self.settings.AI_KNOWLEDGE_AGENT_DEADLINE_SECONDS,
             AgentName.DEVICE_ACTION: self.settings.AI_DEVICE_ACTION_AGENT_DEADLINE_SECONDS,
+            AgentName.FORECAST: self.settings.AI_FORECAST_AGENT_DEADLINE_SECONDS,
+            AgentName.OPTIMIZER: self.settings.AI_OPTIMIZER_AGENT_DEADLINE_SECONDS,
+            AgentName.BILL_TARIFF: self.settings.AI_BILL_TARIFF_AGENT_DEADLINE_SECONDS,
         }

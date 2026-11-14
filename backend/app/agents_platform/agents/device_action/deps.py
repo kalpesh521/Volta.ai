@@ -8,8 +8,10 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.checkpointer import checkpointer_provider
+from app.core.config import settings
 from app.core.database import get_db
 from app.agents_platform.agents.device_action.graph import build_action_graph
+from app.agents_platform.agents.device_action.outbox import OutboxRelay
 from app.agents_platform.agents.device_action.publisher import CommandPublisher, default_publisher
 from app.agents_platform.agents.device_action.service import ActionService
 from app.modules.energy.deps import get_energy_service
@@ -33,3 +35,7 @@ def get_action_service(
     publisher: CommandPublisher = Depends(get_command_publisher),
 ) -> ActionService:
     return ActionService(db=db, energy=energy, graph=graph, publisher=publisher)
+
+
+def get_outbox_relay(publisher: CommandPublisher = Depends(get_command_publisher)) -> OutboxRelay:
+    return OutboxRelay(publisher, settings)

@@ -36,7 +36,9 @@ def get_knowledge_service(
 def build_knowledge_service(db: AsyncSession, ai: AISettings, embedder: Embedder) -> KnowledgeService:
     """The service for an explicit session, for callers that own their own database scope (streaming)."""
     return KnowledgeService(
-        KnowledgeRepository(db),
+        KnowledgeRepository(
+            db, hnsw_ef_search=ai.RAG_HNSW_EF_SEARCH, hnsw_iterative_scan=ai.RAG_HNSW_ITERATIVE_SCAN
+        ),
         embedder,
         DocumentStorage(Path(settings.KNOWLEDGE_STORAGE_DIR)),
         max_bytes=settings.KNOWLEDGE_MAX_UPLOAD_BYTES,
@@ -46,4 +48,6 @@ def build_knowledge_service(db: AsyncSession, ai: AISettings, embedder: Embedder
         min_score=ai.RAG_MIN_SCORE,
         vector_candidates=ai.RAG_VECTOR_CANDIDATES,
         lexical_candidates=ai.RAG_LEXICAL_CANDIDATES,
+        rrf_k=ai.RAG_RRF_K,
+        quarantine_score=ai.AI_GUARD_BLOCK_SCORE,  # the score that refuses a chat message also quarantines a chunk
     )

@@ -19,6 +19,8 @@ Turn fields: `question`, `agents` (exact set), `route` (single | multi | exclusi
 answers when the rules are not confident), and `llm` ({"router": n, "answer": n, "guard": n} exact call counts)
 are optional. `guard` (allow | review | block) asserts the input guard's final decision. `classifier`
 (injection | clean | unavailable) turns the grey-zone classifier on and sets what the stub guard model answers.
+`offer` is the device command expected to be offered beside an answered question (message = question + command); it
+must come back in `offered_command` and in the answer, and Device Action must not run.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agents_platform.contracts import AgentName
+from app.agents_platform.orchestration.planning_intents import PlanningIntent
 from app.modules.assistant.domain.intents import Intent
 from app.modules.assistant.evals.cases import EvalDatasetError
 
@@ -37,7 +40,7 @@ METHODS = frozenset({"rules", "memory", "llm", "default"})
 GUARD_DECISIONS = frozenset({"allow", "review", "block"})
 CLASSIFIER_OUTCOMES = frozenset({"injection", "clean", "unavailable"})
 _TURN_KEYS = frozenset(
-    {"question", "agents", "route", "intents", "method", "router_intent", "llm", "guard", "classifier"}
+    {"question", "agents", "route", "intents", "method", "router_intent", "llm", "guard", "classifier", "offer"}
 )
 _REQUIRED_TURN_KEYS = frozenset({"question", "agents", "route"})
 
@@ -55,6 +58,7 @@ class TurnExpectation:
     llm_guard_calls: int | None = None
     guard: str | None = None  # the input guard's final decision: allow | review | block
     classifier: str | None = None  # what the grey-zone classifier answers: injection | clean | unavailable
+    offer: str | None = None  # the device command offered beside an answered question ("explain and do")
 
 
 @dataclass(frozen=True)
@@ -134,7 +138,7 @@ def _build_turn(turn: object, where: str) -> TurnExpectation:
         raise EvalDatasetError(f"{where}: 'multi' means more than one agent, and only that")
 
     intents = turn.get("intents")
-    valid_intents = {i.value for i in Intent}
+    valid_intents = {i.value for i in Intent} | {i.value for i in PlanningIntent}
     if intents is not None and (not isinstance(intents, list) or not set(intents) <= valid_intents):
         raise EvalDatasetError(f"{where}: 'intents' must be a list of known intents")
     method = turn.get("method")
@@ -157,6 +161,12 @@ def _build_turn(turn: object, where: str) -> TurnExpectation:
     if classifier is not None and classifier not in CLASSIFIER_OUTCOMES:
         raise EvalDatasetError(f"{where}: 'classifier' must be one of {sorted(CLASSIFIER_OUTCOMES)}")
 
+    offer = turn.get("offer")
+    if offer is not None and (not isinstance(offer, str) or not offer.strip()):
+        raise EvalDatasetError(f"{where}: 'offer' must be the offered command text")
+    if offer is not None and "device_action" in agents:
+        raise EvalDatasetError(f"{where}: an offered command is never run, so device_action cannot also run")
+
     return TurnExpectation(
         question=question,
         agents=frozenset(agents),
@@ -169,4 +179,5 @@ def _build_turn(turn: object, where: str) -> TurnExpectation:
         llm_guard_calls=llm.get("guard"),
         guard=guard,
         classifier=classifier,
+        offer=offer,
     )

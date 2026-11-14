@@ -148,7 +148,24 @@ def test_the_active_version_reaches_the_messages_the_model_sees():
 def test_the_resolved_prompts_report_what_is_registered():
     resolved = build_platform(settings()).prompts.as_dict()
     assert resolved["answer"]["active"] == prompts.PROMPT_VERSION
-    assert set(resolved["answer"]["registered"]) == {prompts.PROMPT_VERSION, prompts.PROMPT_VERSION_V5}
+    assert set(resolved["answer"]["registered"]) == {
+        prompts.PROMPT_VERSION,
+        prompts.PROMPT_VERSION_V5,
+        prompts.PROMPT_VERSION_V6,
+    }
+
+
+def test_v6_is_v5_plus_exactly_one_rule_that_the_observation_answers_first():
+    v5 = prompts.ANSWER_PROMPTS[prompts.PROMPT_VERSION_V5].messages[0].prompt.template
+    v6 = prompts.ANSWER_PROMPTS[prompts.PROMPT_VERSION_V6].messages[0].prompt.template
+    assert v6 != v5 and "observation must answer the question" in v6 and "observation must answer" not in v5
+    assert v6.replace(prompts._ANSWER_FIRST_RULE_V6, "") == v5  # nothing else changed
+
+
+def test_v6_is_registered_but_not_the_default_until_it_has_been_measured():
+    assert prompts.PROMPT_VERSION_V6 in registry.versions(registry.ANSWER)
+    assert registry.default_version(registry.ANSWER) == prompts.PROMPT_VERSION
+    assert registry.resolve(registry.ANSWER, prompts.PROMPT_VERSION_V6) == prompts.PROMPT_VERSION_V6
 
 
 # --- model registry -------------------------------------------------------------------------------

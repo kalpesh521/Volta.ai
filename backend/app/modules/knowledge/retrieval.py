@@ -8,8 +8,9 @@ On Postgres, candidates come from two indexed searches whose results are united:
 
 Both are limited to published shared documents plus the asking user's private
 documents. The union is then scored in Python: cosine similarity mixed with
-lexical overlap, boosts for brand / DISCOM / recency, and maximal marginal
-relevance so five copies of the same paragraph do not fill the context.
+BM25, fused by rank (RRF), with boosts for brand / DISCOM / recency, and maximal marginal
+relevance so five copies of the same paragraph do not fill the context. Candidates are ordered by Reciprocal Rank
+Fusion of a cosine ranking and a BM25 ranking (see `ranking.py`).
 Without Postgres (tests, SQLite) the repository scans a bounded set instead.
 """
 from __future__ import annotations
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.modules.knowledge.enums import DocType
+from app.modules.knowledge.ranking import bm25_scores, query_terms, ranks, reciprocal_rank_fusion
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 
@@ -39,6 +41,7 @@ SELECT
 FROM knowledge_chunks AS c
 JOIN knowledge_documents AS d ON d.id = c.document_id
 WHERE d.status = 'published'
+  AND c.quarantined = false
   AND d.embedding_model = :embedding_model
   AND (
         d.scope = 'shared'
@@ -159,16 +162,24 @@ def rank_passages(
     brand: str | None = None,
     discom: str | None = None,
     today: date | None = None,
+    rrf_k: int = 60,
 ) -> list[ScoredPassage]:
-    query_tokens = set(_TOKEN.findall(question.lower()))
+    """
+    The best `top_k` passages. A candidate must clear a relevance floor (`min_score`, on cosine and BM25 as before) to
+    be considered at all; the survivors are ordered by Reciprocal Rank Fusion of their cosine and BM25 rankings plus
+    the brand / DISCOM / recency boosts, then thinned by maximal marginal relevance.
+    """
+    if not candidates:
+        return []
+    vector_scores = [cosine(query_vector, c.embedding) for c in candidates]
+    lexical = bm25_scores(query_terms(question), [c.content for c in candidates])
+    fused = reciprocal_rank_fusion(ranks(vector_scores), ranks(lexical), k=rrf_k)
+
     scored: list[tuple[float, Candidate]] = []
-    for candidate in candidates:
-        vector_score = cosine(query_vector, candidate.embedding)
-        lexical = _overlap(query_tokens, candidate.content)
-        score = (0.75 * vector_score) + (0.25 * lexical)
-        score += _metadata_boost(candidate, brand=brand, discom=discom, today=today)
-        if score >= min_score:
-            scored.append((score, candidate))
+    for candidate, vector_score, lexical_score, fused_score in zip(candidates, vector_scores, lexical, fused):
+        boost = _metadata_boost(candidate, brand=brand, discom=discom, today=today)
+        if (0.75 * vector_score) + (0.25 * lexical_score) + boost >= min_score:
+            scored.append((fused_score + boost, candidate))
     scored.sort(key=lambda item: item[0], reverse=True)
     chosen = _mmr(scored[: max(top_k * 4, top_k)], top_k)
     return [
@@ -182,13 +193,6 @@ def rank_passages(
         )
         for score, candidate in chosen
     ]
-
-
-def _overlap(query_tokens: set[str], text: str) -> float:
-    if not query_tokens:
-        return 0.0
-    text_tokens = set(_TOKEN.findall(text.lower()))
-    return len(query_tokens & text_tokens) / len(query_tokens)
 
 
 def _metadata_boost(

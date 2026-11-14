@@ -388,10 +388,15 @@ async def run(
     ingest_client = None
     rabbitmq_publisher = None
     command_listener = None
+    trace_ratio = config.trace_sample_ratio if config.trace_propagation_enabled else None
     if config.ingest_url.strip():
         from simulator.clients.ingest import IngestClient
 
-        ingest_client = IngestClient(config.ingest_url, _ingest_token(config))
+        ingest_client = IngestClient(
+            config.ingest_url,
+            _ingest_token(config),
+            trace_sample_ratio=trace_ratio,
+        )
         logger.info("Publishing ticks over HTTP to %s", ingest_client.url)
     if config.rabbitmq_url.strip():
         from simulator.clients.rabbitmq import RabbitMQPublisher
@@ -401,6 +406,7 @@ async def run(
             exchange=config.rabbitmq_exchange,
             routing_key=config.rabbitmq_routing_key,
             timeout_seconds=config.rabbitmq_publish_timeout_seconds,
+            trace_sample_ratio=trace_ratio,
         )
         logger.info(
             "Publishing ticks to RabbitMQ exchange=%s routing_key=%s",

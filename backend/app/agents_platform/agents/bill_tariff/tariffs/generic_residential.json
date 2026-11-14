@@ -1,0 +1,22 @@
+{
+  "id": "generic-residential",
+  "version": "illustrative-1",
+  "discom": "generic",
+  "category": "residential",
+  "effective_from": "2000-01-01",
+  "effective_to": null,
+  "currency": "INR",
+  "slabs": [
+    {"up_to_units": 100, "rate": 4.0},
+    {"up_to_units": 300, "rate": 6.5},
+    {"up_to_units": null, "rate": 9.0}
+  ],
+  "fixed_charge_per_month": 100,
+  "sanctioned_load_charge_per_kw": null,
+  "tod_bands": [],
+  "fuel_adjustment_per_kwh": 0.25,
+  "duty_percent": 5,
+  "export": {"mode": "net_billing", "credit_per_kwh": 3.0, "bank_units": false},
+  "source": "Illustrative values, replace with the official tariff order. Invented for development and testing; not taken from any real tariff order.",
+  "verified": false
+}

@@ -7,7 +7,9 @@ zone, which is where the optional classifier decides.
 
 The patterns are deliberately narrow. A false positive refuses a real customer, so a phrase has to look like
 an attack, not merely contain a word: "ignore the safety margin" is a battery question and must pass.
-English only for now (the multilingual work is in doc 11 §2).
+English, Hinglish (Hindi in Latin letters) and Hindi/Marathi in Devanagari are covered. Leetspeak is handled by the caller,
+which scores a folded copy too (`normalize.deleet`). Devanagari patterns use no `\\b`: word boundaries do not work with
+combining marks.
 """
 from __future__ import annotations
 
@@ -121,13 +123,75 @@ _PATTERNS: tuple[tuple[Category, float, re.Pattern[str]], ...] = (
     ),
 )
 
+# --- Hinglish, Hindi and Marathi -----------------------------------------------------------------------------
+# The same two shapes as the English patterns: a strong "<verb> <all/previous/your> <rules>" is enough to block, and a
+# bare "<verb> <rules>" is a weak hint. A question that merely contains "niyam" (rules) or "pichle" (previous) is not an
+# attack: both a verb of ignoring and a noun of instructions have to be there, close together.
+_HI_VERB = r"(?:ignore|andekh\w*|anadekh\w*|nazarandaz\w*|bhool\w*|bhul\w*|chhod\w*|hata\w*|override|bypass|maano\s+mat)"
+_HI_QUAL = r"(?:saare|sare|sabhi|pichle|pichhle|pehle|purane|apne|apni|tumhare|aapke|tumhari)"
+_HI_NOUN = r"(?:niyam\w*|nirdesh\w*|instructions?|rules?|guidelines?|aadesh\w*)"
+_DEV_VERB = r"(?:अनदेखा|नज़रअंदाज़|नजरअंदाज|नज़रअंदाज|भूल|छोड़|हटा|दुर्लक्ष|विसर)"
+_DEV_QUAL = r"(?:सभी|सारे|सर्व|पिछले|पिछली|पहले\s+के|मागील|आधीच्या|अपने|तुम्हारे|आपके|तुमच्या)"
+_DEV_NOUN = r"(?:निर्देश|नियम|आदेश|सूचना|आज्ञा)"
+
+_MULTILINGUAL_PATTERNS: tuple[tuple[Category, float, re.Pattern[str]], ...] = (
+    (
+        Category.INSTRUCTION_OVERRIDE,
+        0.9,
+        re.compile(rf"\b{_HI_VERB}\s+(?:\w+\s+){{0,3}}?{_HI_QUAL}\s+(?:\w+\s+){{0,2}}?{_HI_NOUN}\b", _I),
+    ),
+    (
+        Category.INSTRUCTION_OVERRIDE,
+        0.9,
+        re.compile(rf"\b{_HI_QUAL}\s+(?:\w+\s+){{0,2}}?{_HI_NOUN}\s+(?:\w+\s+){{0,3}}?{_HI_VERB}\b", _I),
+    ),
+    (
+        Category.INSTRUCTION_OVERRIDE,
+        WEAK_WEIGHT,
+        re.compile(rf"\b{_HI_NOUN}\s+(?:\w+\s+){{0,2}}?{_HI_VERB}\b|\b{_HI_VERB}\s+(?:\w+\s+){{0,2}}?{_HI_NOUN}\b", _I),
+    ),
+    (
+        Category.INSTRUCTION_OVERRIDE,
+        0.9,
+        re.compile(rf"{_DEV_QUAL}\s+(?:\S+\s+){{0,2}}?{_DEV_NOUN}\w*\s+(?:\S+\s+){{0,3}}?{_DEV_VERB}"),
+    ),
+    (
+        Category.INSTRUCTION_OVERRIDE,
+        0.9,
+        re.compile(rf"{_DEV_VERB}\w*\s+(?:\S+\s+){{0,3}}?{_DEV_QUAL}\s+(?:\S+\s+){{0,2}}?{_DEV_NOUN}"),
+    ),
+    (
+        Category.PROMPT_EXTRACTION,
+        0.9,
+        re.compile(
+            r"\b(?:system\s+prompt|(?:apne|tumhare|aapke|apni)\s+(?:\w+\s+)?(?:instructions?|niyam|nirdesh\w*|rules?))\s+"
+            r"(?:\w+\s+){0,2}?(?:batao|bata\s+do|btao|dikhao|dikha\s+do|bolo|likho|sunao)\b",
+            _I,
+        ),
+    ),
+    (
+        Category.PROMPT_EXTRACTION,
+        0.9,
+        re.compile(r"(?:अपने|तुम्हारे|आपके|तुमच्या)\s+(?:\S+\s+){0,2}?(?:निर्देश|नियम|सिस्टम\s+प्रॉम्प्ट|सूचना)\w*\s+(?:\S+\s+){0,2}?(?:बताओ|बताइए|दिखाओ|दिखाइए|सुनाओ|लिखो|सांगा|दाखवा)"),
+    ),
+    (
+        Category.ROLE_HIJACK,
+        0.5,
+        re.compile(
+            r"\bab\s+se\s+tum\b|\b(?:tumhare|tum\s+par)\s+koi\s+(?:rules?|niyam|restrictions?)\s+nahi\b|"
+            r"अब\s+से\s+तुम|तुम्हारे\s+कोई\s+नियम\s+नहीं|तुमच्यावर\s+कोणतेही\s+नियम\s+नाहीत",
+            _I,
+        ),
+    ),
+)
+
 HIDDEN_TEXT_WEIGHT = 0.3
 
 
 def score_text(text: str, *, hidden_chars: int = 0) -> InjectionScore:
     """Score normalised text. `hidden_chars` is how many invisible characters normalisation removed."""
     best: dict[Category, float] = {}
-    for category, weight, pattern in _PATTERNS:
+    for category, weight, pattern in (*_PATTERNS, *_MULTILINGUAL_PATTERNS):
         if weight > best.get(category, 0.0) and pattern.search(text):
             best[category] = weight
     if hidden_chars > 0:

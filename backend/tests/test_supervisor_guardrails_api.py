@@ -13,6 +13,7 @@ from sqlalchemy import select
 from app.agents_platform.api.deps import get_platform, get_supervisor_graph
 from app.agents_platform.conversations import AssistantConversation, thread_id_for
 from app.agents_platform.platform import build_platform
+from app.agents_platform.contracts import AgentName
 from app.ai.config import AISettings, LLMRole
 from app.models.user import User
 from app.modules.assistant import prompts
@@ -349,7 +350,7 @@ async def test_the_platform_status_shows_what_is_on(client, db_session, fake_llm
 
     status = (await client.get(f"{ADMIN}/platform", headers=headers)).json()
 
-    assert set(status["flags"]) == {"ai.llm.enabled", *(f"ai.agent.{a}.enabled" for a in ("energy_insight", "knowledge", "device_action"))}
+    assert set(status["flags"]) == {"ai.llm.enabled", *(f"ai.agent.{a}.enabled" for a in (x.value for x in AgentName))}
     assert status["prompts"]["answer"]["active"] == prompts.PROMPT_VERSION
     assert prompts.PROMPT_VERSION_V5 in status["prompts"]["answer"]["registered"]
     assert {m["role"] for m in status["models"]} == {r.value for r in LLMRole}

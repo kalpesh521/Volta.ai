@@ -12,6 +12,12 @@ Two policies:
 number the user typed may come back; an email, phone or national id never does, even if the model repeats
 its token.
 
+Names and addresses have no checksum, so they are recognised by *cue* only (rule-based entity recognition, no model):
+"my name is", "mera naam", a title before a capitalised name; "flat 12 ... society", a house number followed by a
+locality word, a labelled PIN code. A capitalised word on its own is never a name. That trades recall for precision on
+purpose: a missed name is hidden again on the way out if the model repeats it only when the vault knows it, while a
+false positive would blank a real word in the question.
+
 Identifiers that look like ordinary numbers (consumer, meter and bank account numbers) are only recognised
 next to their label. A bare run of digits is never treated as one of them.
 """
@@ -38,6 +44,8 @@ class PiiClass(StrEnum):
     UPI = "UPI"
     BANK_ACCOUNT = "BANK_ACCOUNT"
     SECRET = "SECRET"
+    PERSON_NAME = "PERSON_NAME"
+    ADDRESS = "ADDRESS"
 
 
 class Action(StrEnum):
@@ -65,6 +73,8 @@ POLICY: dict[PiiClass, ClassPolicy] = {
     PiiClass.UPI: ClassPolicy(Action.BLOCK, False, "UPI id"),
     PiiClass.BANK_ACCOUNT: ClassPolicy(Action.BLOCK, False, "account number"),
     PiiClass.SECRET: ClassPolicy(Action.BLOCK, False, "secret"),
+    PiiClass.PERSON_NAME: ClassPolicy(Action.MASK, False, "name"),
+    PiiClass.ADDRESS: ClassPolicy(Action.MASK, False, "address"),
 }
 
 # Overlaps are resolved in this order: the most specific, most sensitive reading wins.
@@ -81,6 +91,8 @@ _PRIORITY = (
     PiiClass.EMAIL,
     PiiClass.PHONE,
     PiiClass.GPS,
+    PiiClass.ADDRESS,
+    PiiClass.PERSON_NAME,
 )
 _RANK = {cls: index for index, cls in enumerate(_PRIORITY)}
 
@@ -129,7 +141,33 @@ _BANK_ACCOUNT = re.compile(
 )
 
 
-def _spans(pattern: re.Pattern[str], cls: PiiClass, text: str, *, group: int = 0,
+_CAP_WORD = r"[A-Z][a-z]{2,}"
+_TITLE = r"(?:Mr|Mrs|Ms|Miss|Shri|Smt|Dr|Prof)\.?"
+# After an unambiguous cue one capitalised word is enough; after "I am" two are needed ("I am Worried" is not a name).
+_NAME_AFTER_CUE = re.compile(
+    r"(?i:\bmy\s+name\s+is|\bname\s*(?:is|:|-|=)|\bmera\s+na(?:a)?m(?:\s+hai)?|\bmeri\s+pehchaan)\s+"
+    rf"(?:{_TITLE}\s+)?(?P<name>{_CAP_WORD}(?:\s+{_CAP_WORD}){{0,2}})"
+)
+_NAME_AFTER_WEAK_CUE = re.compile(
+    rf"(?i:\bi\s+am|\bi'm|\bthis\s+is)\s+(?:{_TITLE}\s+)?(?P<name>{_CAP_WORD}(?:\s+{_CAP_WORD}){{1,2}})\b"
+)
+_NAME_WITH_TITLE = re.compile(rf"\b{_TITLE}\s+(?P<name>{_CAP_WORD}(?:\s+{_CAP_WORD}){{0,2}})")
+_NAME_DEVANAGARI = re.compile(r"(?:मेरा\s+नाम|मेरे\s+नाम|माझे\s+नाव)\s+(?:है\s+)?(?P<name>(?!है(?:\s|$))[\u0900-\u097F]{2,}(?:\s+(?!है(?:\s|$))[\u0900-\u097F]{2,}){0,2})")
+_LOCALITY = (
+    r"(?:road|rd|street|st|nagar|colony|society|apartments?|apts?|layout|lane|marg|chowk|sector|phase|wadi|peth|"
+    r"vihar|enclave|garden|gardens|park|residency|towers?|heights|complex)"
+)
+_PLACE = r"[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?"  # a capitalised place name after a comma: ", Baner", ", Pune"
+# A house number (it has a digit) followed within a few words by a locality word, then up to three more words and an
+# optional PIN. "plot of the data" has no digit after "plot", so it never matches.
+_ADDRESS = re.compile(
+    r"\b(?i:flat|house|plot|door|room|h\.?\s*no|bldg|building)\s*(?i:no\.?|number|#)?\s*[\w/-]*\d[\w/-]*"
+    rf"(?:[,\s]+[\w./-]+){{0,7}}?[,\s]+(?i:{_LOCALITY})\b(?:[,\s]+(?i:{_LOCALITY})\b)*(?:,\s*{_PLACE}){{0,3}}(?:[,\s-]+[1-9]\d{{5}}\b)?"
+)
+_PIN = re.compile(r"(?i:\b(?:pin(?:\s*code)?|pincode|postal\s*code)\b)(?:\s+is)?[\s:=-]*(?P<pin>[1-9]\d{5})\b")
+
+
+def _spans(pattern: re.Pattern[str], cls: PiiClass, text: str, *, group: int | str = 0,
            accept: Callable[[str], bool] | None = None) -> list[Detection]:
     found = []
     for match in pattern.finditer(text):
@@ -171,6 +209,10 @@ def detect(text: str) -> list[Detection]:
     candidates += _spans(_EMAIL, PiiClass.EMAIL, text)
     candidates += _spans(_PHONE, PiiClass.PHONE, text)
     candidates += _gps_detections(text)
+    candidates += _spans(_ADDRESS, PiiClass.ADDRESS, text)
+    candidates += _spans(_PIN, PiiClass.ADDRESS, text, group=0)
+    for name_pattern in (_NAME_AFTER_CUE, _NAME_AFTER_WEAK_CUE, _NAME_WITH_TITLE, _NAME_DEVANAGARI):
+        candidates += _spans(name_pattern, PiiClass.PERSON_NAME, text, group="name")
 
     chosen: list[Detection] = []
     for candidate in sorted(candidates, key=lambda d: (_RANK[d.cls], d.start)):

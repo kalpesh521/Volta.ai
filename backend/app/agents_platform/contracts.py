@@ -26,6 +26,10 @@ class AgentName(StrEnum):
     ENERGY_INSIGHT = "energy_insight"
     KNOWLEDGE = "knowledge"
     DEVICE_ACTION = "device_action"
+    # Planning agents (Phase 3). They compute with deterministic engines and never write the answer themselves.
+    FORECAST = "forecast"
+    OPTIMIZER = "optimizer"
+    BILL_TARIFF = "bill_tariff"
 
 
 # The planner enforces that `DEVICE_ACTION` is exclusive: it can change the world, so it never

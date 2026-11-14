@@ -36,6 +36,7 @@ from typing import Any
 
 import httpx
 
+from app.agents_platform.evals.budget import ModelCallBudget
 from app.modules.assistant.domain.intents import classify_by_rules
 
 V1_PATH = "/assistant/me/ask"
@@ -48,22 +49,6 @@ Ask = Callable[[str, str], Awaitable[dict[str, Any]]]
 # Fields where two correct answers legitimately differ. Both answers already passed the numeric grounding gate, so a
 # number one states and the other does not is a different choice of which (verified) fact to mention, not an error.
 INFORMATIONAL = frozenset({"numbers stated"})
-
-
-class ModelCallBudget:
-    """A counter that says no. The cap is the user's money, so it is checked before spending, not after."""
-
-    def __init__(self, maximum: int) -> None:
-        if maximum < 0:
-            raise ValueError("the model-call budget cannot be negative")
-        self.maximum = maximum
-        self.used = 0
-
-    def can_afford(self, calls: int) -> bool:
-        return self.used + calls <= self.maximum
-
-    def charge(self, calls: int) -> None:
-        self.used += calls
 
 
 def worst_case_calls(question: str) -> int:

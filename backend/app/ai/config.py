@@ -21,6 +21,7 @@ class LLMRole(StrEnum):
     ROUTER = "router"
     ANSWER = "answer"
     GUARD = "guard"  # grey-zone input classifier (Phase 2). Off unless AI_GUARD_CLASSIFIER_ENABLED.
+    JUDGE = "judge"  # L3 answer-quality judge (Phase 3). Offline evals only; never on the request path.
 
 
 class ModelTarget(BaseModel):
@@ -50,6 +51,11 @@ class AISettings(BaseSettings):
     # Guard model (grey-zone injection classifier). Empty = router model, then answer model.
     AI_GUARD_LLM_PROVIDER: str = ""
     AI_GUARD_LLM_MODEL: str = ""
+
+    # Judge model (offline answer-quality evals, doc 05 §5). Should be a stronger model than the one it judges, so the
+    # eval refuses to run until this is set. Empty provider = the answer provider.
+    AI_JUDGE_LLM_PROVIDER: str = ""
+    AI_JUDGE_LLM_MODEL: str = ""
 
     AI_LLM_TEMPERATURE: float = 0.1
     AI_LLM_MAX_OUTPUT_TOKENS: int = 800
@@ -90,6 +96,12 @@ class AISettings(BaseSettings):
     # Candidates taken from each indexed search (nearest neighbours, full-text) before ranking.
     RAG_VECTOR_CANDIDATES: int = 40
     RAG_LEXICAL_CANDIDATES: int = 40
+    # Reciprocal Rank Fusion constant for combining the cosine and BM25 rankings (60 is the paper's value).
+    RAG_RRF_K: int = 60
+    # pgvector HNSW. `iterative_scan` keeps scanning when a filter (visibility, document type) discards most of the first
+    # neighbours, so a filtered search does not come back short; it needs pgvector 0.8 and is skipped quietly before that.
+    RAG_HNSW_ITERATIVE_SCAN: Literal["off", "strict_order", "relaxed_order"] = "relaxed_order"
+    RAG_HNSW_EF_SEARCH: int = 100
 
     # LangGraph checkpoints (conversation state, pending confirmations).
     # "memory" is per process and is lost on restart: development and tests only.
@@ -108,10 +120,38 @@ class AISettings(BaseSettings):
     AI_ENERGY_AGENT_DEADLINE_SECONDS: float = 8.0
     AI_KNOWLEDGE_AGENT_DEADLINE_SECONDS: float = 10.0
     AI_DEVICE_ACTION_AGENT_DEADLINE_SECONDS: float = 8.0
+    # Planning agents run solvers and may wait on a forecast provider, so their ceilings are higher.
+    AI_FORECAST_AGENT_DEADLINE_SECONDS: float = 10.0
+    AI_OPTIMIZER_AGENT_DEADLINE_SECONDS: float = 12.0
+    AI_BILL_TARIFF_AGENT_DEADLINE_SECONDS: float = 6.0
+    # Attempts for a planning agent whose dependency failed in a way worth retrying (`TransientAgentError`). The
+    # attempts share the agent's one deadline; a retry never extends it. Device Action is never retried: it proposes.
+    AI_PLANNING_AGENT_MAX_ATTEMPTS: int = 2
+    AI_AGENT_RETRY_BACKOFF_SECONDS: float = 0.2
+    # Agents only a `plus` user may use (comma-separated agent names). Checked at startup against the closed agent set.
+    AI_PLUS_ONLY_AGENTS: str = "optimizer"
+    # Bill what-if scenarios (add solar, add battery, shift load) need `plus`; a plain bill estimate does not.
+    AI_PLUS_ONLY_WHAT_IF: bool = True
+    # Automation rules (Phase 4): how many a home may hold, how many may wait for approval, and how long the rule
+    # worker trusts a cached list of a home's active rules before reading it again.
+    AI_AUTOMATION_MAX_RULES: int = 10
+    AI_AUTOMATION_MAX_PENDING: int = 5
+    AI_AUTOMATION_CACHE_SECONDS: float = 15.0
+    # Attempts the Automation Rule agent gets to write a valid rule: one draft plus repairs from the validator's messages.
+    AI_AUTOMATION_MAX_DRAFTS: int = 2
+    # Open-Meteo hourly forecast for the Forecast agent. Off = persistence of the latest observed weather.
+    AI_FORECAST_WEATHER_ENABLED: bool = False
+    AI_FORECAST_WEATHER_TIMEOUT_SECONDS: float = 4.0
     # Answer generations per question: 2 means one regeneration when grounding fails.
     AI_ANSWER_MAX_ATTEMPTS: int = 2
     # Earlier turns used to resolve a follow-up. Older turns stay in the thread but are not read.
     AI_MEMORY_WINDOW_TURNS: int = 4
+    # Long-term memory ("What Suryaa remembers"): durable facts the user chose to save. Max items per user and home,
+    # max characters per item (the table holds at most 400), and how much of it one answer may read.
+    AI_MEMORY_MAX_ITEMS: int = 50
+    AI_MEMORY_ITEM_MAX_CHARS: int = 200
+    AI_MEMORY_FACTS_LIMIT: int = 8
+    AI_MEMORY_FACTS_MAX_CHARS: int = 600
     # Conversations idle longer than this are deleted together with their checkpoints.
     AI_CONVERSATION_RETENTION_DAYS: int = 30
 
@@ -166,6 +206,11 @@ class AISettings(BaseSettings):
     LANGSMITH_ENDPOINT: str = ""
 
     def target(self, role: LLMRole) -> ModelTarget:
+        if role is LLMRole.JUDGE and self.AI_JUDGE_LLM_MODEL.strip():
+            return ModelTarget(
+                provider=(self.AI_JUDGE_LLM_PROVIDER or self.AI_LLM_PROVIDER).strip(),
+                model=self.AI_JUDGE_LLM_MODEL.strip(),
+            )
         if role is LLMRole.GUARD and self.AI_GUARD_LLM_MODEL.strip():
             return ModelTarget(
                 provider=(self.AI_GUARD_LLM_PROVIDER or self.AI_LLM_PROVIDER).strip(),

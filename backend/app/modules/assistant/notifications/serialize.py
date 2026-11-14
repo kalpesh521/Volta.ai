@@ -1,7 +1,7 @@
 """JSON shape shared by the REST list, the cache, and the WebSocket."""
 from __future__ import annotations
 
-from app.agents_platform.agents.device_action.models import HomeNotification
+from app.modules.assistant.notifications.models import HomeNotification
 from app.modules.assistant.domain.alerts import channels_for, priority_for
 from app.modules.assistant.ops.schemas import NotificationOut
 

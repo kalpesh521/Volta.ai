@@ -4,6 +4,8 @@ Make hidden tricks visible before the text is inspected.
 * NFKC folds full-width and compatibility forms ("ｉｇｎｏｒｅ" becomes "ignore").
 * Invisible and control characters (zero-width spaces, bidi overrides, Unicode "tag" characters used to
   smuggle text) are removed, and counted, because *having* them is itself a signal.
+* Leetspeak ("1gn0re", "5ystem") is folded in a separate *scoring view* (`deleet`). It is only ever used to look for
+  attack phrases: the text that is answered, masked and stored is never altered, so "25%" and "E04" survive.
 * Cyrillic and Greek look-alike letters inside a word that also contains Latin letters are folded to Latin
   ("ignоre" with a Cyrillic о). Words written entirely in another script are left alone, so Hindi and other
   languages are not touched.
@@ -66,3 +68,34 @@ def normalize(text: str) -> NormalizedText:
         invisible_removed=removed,
         homoglyphs_folded=changed,
     )
+
+
+_LEET = {"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "!": "i"}
+_LEET_WORD = re.compile(r"[A-Za-z0-9@$!]{4,}")
+_MIN_LEET_LETTERS = 3  # a word needs real letters around the digits, so a reading like "E04" is left alone
+_NUMBER_WITH_UNIT = re.compile(r"\d+[A-Za-z]{1,4}")  # "5kWp", "3kWh", "4pm", "3rd": a quantity, never leetspeak
+
+
+def deleet(text: str) -> tuple[str, int]:
+    """
+    A copy of `text` with leetspeak folded back to letters, and how many characters changed.
+
+    A word is folded only when it mixes letters with look-alike digits or symbols and has at least three letters,
+    so numbers, quantities with a unit and fault codes ("E04", "25%", "5kW", "A4") are never rewritten. Pure function of the text.
+    """
+    changed = 0
+
+    def fold(match: re.Match[str]) -> str:
+        nonlocal changed
+        word = match.group(0)
+        if _NUMBER_WITH_UNIT.fullmatch(word):
+            return word
+        letters = sum(c.isalpha() for c in word)
+        swappable = sum(c in _LEET for c in word)
+        if letters < _MIN_LEET_LETTERS or swappable == 0 or swappable * 2 > len(word):
+            return word
+        folded = "".join(_LEET.get(c, c) for c in word)
+        changed += sum(1 for a, b in zip(word, folded) if a != b)
+        return folded
+
+    return _LEET_WORD.sub(fold, text), changed

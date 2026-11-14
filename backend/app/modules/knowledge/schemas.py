@@ -47,6 +47,8 @@ class DocumentOut(BaseModel):
     chunk_count: int
     byte_size: int
     created_at: datetime
+    quarantined_chunk_count: int = Field(default=0, description="Chunks withheld from retrieval as instruction-like text.")
+    masked_value_count: int = Field(default=0, description="Personal values masked in the searchable text.")
     bill: BillOut | None = None
     reviews: list[ReviewOut] = Field(default_factory=list)
     versions: list[VersionOut] = Field(default_factory=list)

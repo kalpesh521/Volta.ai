@@ -6,6 +6,7 @@ Used by the v1 graph's `classify` node and by the v2 supervisor, so both route a
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from langchain_core.runnables import RunnableConfig
@@ -39,6 +40,7 @@ async def route_question(
     llm: StructuredLLM,
     config: RunnableConfig | None = None,
     rules: IntentMatch | None = None,
+    history: Sequence[str] = (),
 ) -> RoutingOutcome:
     """Classify with rules; ask the router LLM only when they are unsure. Never raises on LLM failure."""
     match = rules if rules is not None else classify_by_rules(question)
@@ -48,7 +50,7 @@ async def route_question(
         return RoutingOutcome(replace(match, method=ClassificationMethod.DEFAULT))
     try:
         result = await llm.ainvoke(
-            LLMRole.ROUTER, IntentClassification, router_messages(question), config=config
+            LLMRole.ROUTER, IntentClassification, router_messages(question, history), config=config
         )
     except LLMInvocationError as exc:
         logger.warning("router LLM failed, using rules: %s", exc)

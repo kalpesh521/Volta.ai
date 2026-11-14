@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents_platform.agents.device_action import states
 from app.agents_platform.agents.device_action.models import ActionAuditEvent, ActionProposal, DeviceOverride
 from app.agents_platform.agents.device_action.worker import handle_device_command
 from app.modules.assistant.notifications.deliver import save_notification
@@ -16,6 +17,14 @@ async def record_virtual_result(db: AsyncSession, payload: dict[str, Any]) -> di
     proposal = await _proposal_for_command(db, str(payload.get("command_id") or ""))
     if proposal is not None and proposal.status == "cancelled":
         return {"applied": False, "status": "cancelled", "command_id": payload.get("command_id")}
+    if proposal is not None and proposal.status in (states.APPLIED, states.FAILED):
+        # The outbox delivers at least once, so a command can arrive twice. A command that already ended is not run
+        # again: no second override, no second audit row, no second notification.
+        return {
+            "applied": proposal.status == states.APPLIED,
+            "status": "duplicate",
+            "command_id": payload.get("command_id"),
+        }
     result = handle_device_command(payload)
     now = datetime.now(timezone.utc)
     if proposal is not None:

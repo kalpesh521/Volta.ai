@@ -15,6 +15,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from app.agents_platform.orchestration.planning_intents import parse_intent
 from app.agents_platform.orchestration.state import Turn
 from app.modules.assistant.domain.intents import (
     ApplianceType,
@@ -33,6 +34,16 @@ _LEAD = re.compile(
     r"can you explain|is that|does that|will that)\b|(?:but\s+)?(?:why|how come)\s*[?.!]*$)"
 )
 _REFERS_BACK = re.compile(r"\b(?:it|that|this|those|these|they|them|there|same|again)\b")
+# Hinglish and Hindi/Marathi openers and pointers. A bare "kyun?" / "क्यों?" is a follow-up exactly like a bare "why?".
+# Devanagari has no `\b`, so these are anchored on the start of the question or on whitespace instead.
+_LEAD_HI = re.compile(
+    r"^(?:(?:aur|lekin|par|phir|toh|to|aur\s+kal|kal\s+ka|isliye|matlab)\b|(?:kyun|kyon|kaise|kaisa|kab)\s*[?.!]*$|"
+    r"(?:और|लेकिन|फिर|तो|मतलब)(?:\s|$)|(?:क्यों|कैसे|कब|का|आणि|पण|मग)\s*[?.!]*$)"
+)
+_REFERS_BACK_HI = re.compile(
+    r"\b(?:yeh|ye|woh|wo|vo|isse|usse|iska|uska|isme|usme|yahan|wahan|wahi|phir\s+se)\b|"
+    r"(?:^|\s)(?:यह|ये|वह|वो|इसका|उसका|इसमें|उसमें|वही|हे|ते)(?:\s|$)"
+)
 
 # A turn that was refused or turned into an action is not a topic a follow-up can continue.
 _NOT_A_TOPIC = frozenset({Intent.DEVICE_CONTROL.value, Intent.OUT_OF_SCOPE.value})
@@ -48,7 +59,7 @@ def looks_like_follow_up(question: str) -> bool:
     text = " ".join(question.lower().split())
     if len(text.split()) > _MAX_FOLLOW_UP_WORDS:
         return False
-    return bool(_LEAD.search(text) or _REFERS_BACK.search(text))
+    return bool(_LEAD.search(text) or _LEAD_HI.search(text) or _REFERS_BACK.search(text) or _REFERS_BACK_HI.search(text))
 
 
 def resolve_follow_up(
@@ -69,7 +80,7 @@ def resolve_follow_up(
     if appliance is None and previous["appliance"]:
         appliance = ApplianceType(previous["appliance"])
     match = IntentMatch(
-        intents=tuple(Intent(i) for i in previous["intents"]),
+        intents=tuple(parse_intent(i) for i in previous["intents"]),
         appliance=appliance,
         confident=True,
         method=ClassificationMethod.MEMORY,

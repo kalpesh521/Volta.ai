@@ -1,0 +1,26 @@
+{
+  "id": "illustrative-alpha-residential",
+  "version": "illustrative-2025",
+  "discom": "Illustrative DISCOM Alpha",
+  "category": "residential",
+  "effective_from": "2025-04-01",
+  "effective_to": "2026-03-31",
+  "currency": "INR",
+  "slabs": [
+    {"up_to_units": 100, "rate": 3.8},
+    {"up_to_units": 300, "rate": 6.2},
+    {"up_to_units": null, "rate": 8.4}
+  ],
+  "fixed_charge_per_month": 110,
+  "sanctioned_load_charge_per_kw": 20,
+  "tod_bands": [
+    {"name": "night", "start": "22:00", "end": "06:00", "multiplier": 0.9},
+    {"name": "day", "start": "06:00", "end": "18:00", "multiplier": 1.0},
+    {"name": "peak", "start": "18:00", "end": "22:00", "multiplier": 1.2}
+  ],
+  "fuel_adjustment_per_kwh": 0.18,
+  "duty_percent": 16,
+  "export": {"mode": "net_metering", "credit_per_kwh": 0, "bank_units": true},
+  "source": "Illustrative values, replace with the official tariff order. Invented for development and testing; not taken from any real tariff order.",
+  "verified": false
+}

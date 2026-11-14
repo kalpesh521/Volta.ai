@@ -109,6 +109,35 @@ class Settings(BaseSettings):
     RABBITMQ_PREFETCH: int = 50
     RABBITMQ_DLX: str = "telemetry.dlx"
     RABBITMQ_DLQ: str = "telemetry.ingest.dead"
+    # The automation worker reads its own copy of every tick from this queue. Stale ticks are useless to it, so the
+    # queue forgets them: a message lives at most RABBITMQ_AUTOMATION_TTL_MS and the queue holds at most
+    # RABBITMQ_AUTOMATION_MAX_LENGTH (oldest dropped first), so a stopped worker cannot make the broker grow.
+    RABBITMQ_AUTOMATION_QUEUE: str = "telemetry.automation"
+    RABBITMQ_AUTOMATION_TTL_MS: int = 60_000
+    RABBITMQ_AUTOMATION_MAX_LENGTH: int = 5_000
+
+    # --- Ingest worker: competing consumers and batched Timescale writes ---
+    # Run any number of ingest-worker replicas on the one queue. Each replica buffers valid ticks and
+    # writes them in one transaction, then acks. A flush happens at INGEST_BATCH_SIZE ticks or when the
+    # oldest buffered tick is INGEST_BATCH_MAX_AGE_SECONDS old, whichever comes first. Nothing is acked
+    # before its batch is committed. 1 = one tick per transaction (the pre-Phase-5 behaviour).
+    # Clamped to RABBITMQ_PREFETCH: the broker never delivers more unacked ticks than that, so a larger
+    # batch could only ever flush on age. Keep PREFETCH >= 2 x BATCH_SIZE so reading overlaps writing.
+    INGEST_BATCH_SIZE: int = 25
+    INGEST_BATCH_MAX_AGE_SECONDS: float = 0.5
+    # One batch write may take this long before it counts as a transient failure and is requeued.
+    INGEST_WRITE_TIMEOUT_SECONDS: float = 30.0
+    # A tick whose own write keeps failing for a non-transient reason is dead-lettered after this many
+    # failed writes (counted per replica, and from x-delivery-count when the queue is a quorum queue).
+    INGEST_MAX_ATTEMPTS: int = 5
+    # Pause before a whole batch is requeued after a transient failure (database down): doubles up to the max.
+    INGEST_RETRY_BACKOFF_SECONDS: float = 1.0
+    INGEST_RETRY_BACKOFF_MAX_SECONDS: float = 30.0
+    # SIGTERM: stop consuming, then flush what is buffered for at most this long. Keep it below the
+    # orchestrator's termination grace period (Kubernetes default 30 s).
+    INGEST_SHUTDOWN_TIMEOUT_SECONDS: float = 25.0
+    # How often each replica publishes the queue depth gauges. 0 turns the poller off.
+    INGEST_LAG_POLL_SECONDS: float = 5.0
 
     # Dashboard live feed (FastAPI WebSocket). Auth is the user JWT.
     WS_PATH: str = "/ws/energy"
@@ -141,6 +170,16 @@ class Settings(BaseSettings):
     DEVICE_COMMAND_QUEUE: str = "device.commands"
     DEVICE_COMMAND_SIMULATOR_QUEUE: str = "simulator.device.commands"
     DEVICE_COMMAND_ROUTING_KEY: str = "device.command"
+    # Transactional outbox: a confirmed command is recorded with the request's own transaction and published after the
+    # commit by the relay (tracker 4.3, 4.5). False publishes inside the request, as before Phase 4.
+    DEVICE_COMMAND_OUTBOX_ENABLED: bool = True
+    OUTBOX_POLL_SECONDS: float = 2.0
+    OUTBOX_BATCH_SIZE: int = 20
+    OUTBOX_MAX_ATTEMPTS: int = 5
+    OUTBOX_BACKOFF_SECONDS: float = 2.0
+    # A command older than this when the relay finally reaches it is dropped: switching a heater on because of a
+    # confirmation given ten minutes ago, after an outage, is not what the user asked for.
+    DEVICE_COMMAND_MAX_AGE_SECONDS: int = 300
 
     # Critical alerts only. Leave EMAIL_PROVIDER empty to keep email off.
     # Celery broker defaults to RABBITMQ_URL. Queue: suryaa.notifications.
@@ -163,6 +202,14 @@ class Settings(BaseSettings):
     METRICS_ENABLED: bool = False
     # Workers have no HTTP server; a port above 0 starts a metrics endpoint for them.
     WORKER_METRICS_PORT: int = 0
+
+    # --- Process model (Phase 5) ---
+    # uvicorn worker processes per API pod (read by `python -m app.serve`). More than 1 needs every
+    # piece of shared state to live outside the process: see app/core/startup_guards.py.
+    WEB_CONCURRENCY: int = 1
+    # In-flight requests get this long to finish after SIGTERM before the worker is stopped.
+    # Keep it below the orchestrator's termination grace period.
+    API_GRACEFUL_SHUTDOWN_SECONDS: int = 20
 
 
 @lru_cache

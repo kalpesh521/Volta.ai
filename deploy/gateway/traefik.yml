@@ -1,0 +1,67 @@
+# Traefik STATIC configuration for the optional `gateway` compose profile (Phase 5.3).
+#
+#   docker compose --profile gateway up -d gateway
+#
+# DEVELOPMENT DEFAULTS. Read docs/multi-agent/17-phase5-operations.md before using any of this for real:
+#  - The HTTPS entrypoint serves Traefik's built-in self-signed certificate ("TRAEFIK DEFAULT CERT").
+#    That is a placeholder: browsers warn, clients need -k. For a real certificate see the `tls:` block in
+#    dynamic.yml (certificates mounted from a volume) or configure an ACME resolver here.
+#  - HTTP (8080 in the container) is NOT redirected to HTTPS, so local tools keep working. In production
+#    turn the redirect on (commented block below).
+#  - Routes, middlewares and the backend address live in dynamic.yml (the file provider). The Docker
+#    provider is deliberately not used: it would need the Docker socket mounted into the proxy.
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: INFO
+
+# One JSON line per request on stdout (collected by the container log driver).
+accessLog:
+  format: json
+  fields:
+    headers:
+      defaultMode: drop        # never log Authorization, cookies or tokens
+      names:
+        User-Agent: keep
+        X-Request-Id: keep
+
+entryPoints:
+  web:
+    address: ":8080"
+    # Production: uncomment to force HTTPS.
+    # http:
+    #   redirections:
+    #     entryPoint:
+    #       to: websecure
+    #       scheme: https
+    transport:
+      respondingTimeouts:
+        readTimeout: 60s       # time to read a whole request (a 15 MB upload on a slow link fits)
+        writeTimeout: 0s       # no cap on the response: server-sent events and WebSockets are long-lived
+        idleTimeout: 180s
+  websecure:
+    address: ":8443"
+    http:
+      tls: {}                  # default (self-signed) certificate unless dynamic.yml supplies one
+    transport:
+      respondingTimeouts:
+        readTimeout: 60s
+        writeTimeout: 0s
+        idleTimeout: 180s
+  # Internal only (not published by compose): the health check port.
+  traefik:
+    address: ":8082"
+
+ping:
+  entryPoint: traefik          # GET :8082/ping, used by `traefik healthcheck --ping`
+
+api:
+  dashboard: false             # no dashboard, no /api/rawdata: nothing to expose by accident
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true

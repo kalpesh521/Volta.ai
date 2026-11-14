@@ -35,8 +35,16 @@ from app.agents_platform.guardrails.messages import Refusal, refusal_parts
 from app.agents_platform.guardrails.output_guard import check_answer
 from app.agents_platform.guardrails.pii.masker import redact_leaks
 from app.agents_platform.orchestration.events import status_event
+from app.agents_platform.orchestration.explain_and_do import offer_text, split_explain_and_do
 from app.agents_platform.orchestration.memory import resolve_follow_up
 from app.agents_platform.orchestration.planner import build_agent_plan
+from app.agents_platform.orchestration.planning_intents import (
+    AnyIntent,
+    detect_planning_intents,
+    merge_intents,
+    parse_intent,
+)
+from app.agents_platform.orchestration.retry import max_attempts, run_with_retry
 from app.agents_platform.orchestration.runtime import SupervisorRuntime
 from app.agents_platform.orchestration.state import AgentInput, SupervisorState, Turn, per_turn_reset
 from app.agents_platform.orchestration.synthesis import (
@@ -88,6 +96,9 @@ _STAGE_MESSAGES: dict[AgentName, str] = {
     AgentName.ENERGY_INSIGHT: "Checking your home's energy data…",
     AgentName.KNOWLEDGE: "Searching your documents…",
     AgentName.DEVICE_ACTION: "Checking whether that is safe to do…",
+    AgentName.FORECAST: "Forecasting your solar and usage…",
+    AgentName.OPTIMIZER: "Working out the best schedule…",
+    AgentName.BILL_TARIFF: "Calculating your bill and tariff…",
 }
 
 
@@ -174,26 +185,42 @@ async def classify(
     follow_up = resolve_follow_up(question, rules, (state.get("turns") or [])[-window:])
 
     update: dict[str, Any] = {}
-    if follow_up is not None:
+    combined = (
+        split_explain_and_do(question)
+        if follow_up is None and rules.primary is Intent.DEVICE_CONTROL and not _untrusted(state)
+        else None
+    )
+    if combined is not None:
+        # A question and a command in one message: answer the question, offer the command (never run it here).
+        match, effective = combined.match, combined.question
+        update["offered_command"] = combined.command
+    elif follow_up is not None:
         match, effective = follow_up.match, follow_up.question
     else:
-        outcome = await route_question(question, llm=router, config=config, rules=rules)
+        earlier = [t["question"] for t in (state.get("turns") or [])[-window:]]
+        outcome = await route_question(question, llm=router, config=config, rules=rules, history=earlier)
         match, effective = outcome.match, question
         if outcome.llm_calls:
             update["llm_calls"] = outcome.llm_calls
         if outcome.errors:
             update["errors"] = outcome.errors
+    intents: tuple[AnyIntent, ...] = match.intents
+    if follow_up is None and combined is None:
+        # A planning question (forecast, optimise, bill what-if) is recognised by rules, beside the legacy routing.
+        planning = detect_planning_intents(question, match)
+        if planning:
+            intents = merge_intents(question, planning, match.intents)
     return {
         **update,
         "effective_question": effective,
-        "intents": [intent.value for intent in match.intents],
+        "intents": [intent.value for intent in intents],
         "appliance": match.appliance.value if match.appliance else None,
         "classification_method": match.method.value,
     }
 
 
 def plan(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dict[str, Any]:
-    intents = [Intent(i) for i in state["intents"]]
+    intents = [parse_intent(i) for i in state["intents"]]
     if _untrusted(state) and intents and intents[0] is Intent.DEVICE_CONTROL:
         # Grey-zone input plus a device command: never act on it (doc 04 §2 decision table).
         return {"plan": Plan(refusal=Refusal.INPUT_UNVERIFIED.value).model_dump(mode="json")}
@@ -233,13 +260,25 @@ def make_agent_node(name: AgentName):
             KILL_SWITCH_HITS.labels(flag=agent_flag(name)).inc()
             AGENT_RUNS.labels(agent=name.value, status=AgentStatus.DISABLED.value).inc()
             return {"results": [AgentResult.failed(name, AgentStatus.DISABLED).model_dump(mode="json")]}
+        if not runtime.context.entitlements.allows(name):
+            AGENT_RUNS.labels(agent=name.value, status=AgentStatus.REFUSED.value).inc()
+            return {"results": [_plan_required(name).model_dump(mode="json")]}
         _emit(runtime, status_event("agent_started", _STAGE_MESSAGES[name], agent=name.value))
         agent = runtime.context.agents.get(name)
         started = time.perf_counter()
         try:
             if agent is None:
                 raise LookupError(f"no agent registered for {name.value}")
-            result = await asyncio.wait_for(agent.run(call, config=config), call.deadline_seconds)
+            settings = runtime.context.settings
+            result = await asyncio.wait_for(
+                run_with_retry(
+                    lambda: agent.run(call, config=config),
+                    agent=name,
+                    attempts=max_attempts(name, settings),
+                    backoff_seconds=settings.AI_AGENT_RETRY_BACKOFF_SECONDS,
+                ),
+                call.deadline_seconds,
+            )
         except TimeoutError:
             logger.warning("agent %s exceeded its %.1fs deadline", name.value, call.deadline_seconds)
             result = AgentResult.failed(name, AgentStatus.TIMEOUT)
@@ -254,6 +293,19 @@ def make_agent_node(name: AgentName):
 
     run_agent.__name__ = f"run_{name.value}"
     return run_agent
+
+
+def _plan_required(name: AgentName) -> AgentResult:
+    """A paid feature on a free plan: refused with fixed wording, no data read and no model asked."""
+    return AgentResult(
+        agent=name,
+        status=AgentStatus.REFUSED,
+        draft=refusal_parts(Refusal.PLAN_REQUIRED),
+        fallback_reason=Refusal.PLAN_REQUIRED.value,
+        warnings=["Part of this question needs the Plus plan."],
+        confidence="high",
+        live_advice=False,
+    )
 
 
 def join(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dict[str, Any]:
@@ -484,6 +536,9 @@ def finalize(state: SupervisorState, runtime: Runtime[SupervisorRuntime]) -> dic
         passages=all_citations(good),
     )
 
+    command = state.get("offered_command")
+    if command and state.get("fallback_reason") not in _DETERMINISTIC_REFUSALS:
+        answer["recommendation"] = f"{answer.get('recommendation', '')} {offer_text(command)}".strip()
     answer = _redact_answer(answer)
 
     failed = [r.agent.value for r in results if not r.status.usable and r.status is not AgentStatus.DISABLED]

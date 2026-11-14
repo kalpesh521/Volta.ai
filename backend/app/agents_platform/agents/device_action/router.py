@@ -8,13 +8,16 @@
 
 Do not add `from __future__ import annotations` in this file.
 """
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 
+from app.agents_platform.api.deps import DbScope, get_db_scope
 from app.ai.config import ai_settings
+from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.rate_limit import limiter
 from app.models.user import User
-from app.agents_platform.agents.device_action.deps import get_action_service
+from app.agents_platform.agents.device_action.deps import get_action_service, get_outbox_relay
+from app.agents_platform.agents.device_action.outbox import OutboxRelay, dispatch_now
 from app.agents_platform.agents.device_action.schemas import ActionResponse, ConfirmActionRequest, ProposeActionRequest
 from app.agents_platform.agents.device_action.service import ActionService
 from app.modules.energy.access import require_my_completed_system
@@ -60,11 +63,19 @@ async def confirm_action(
     request: Request,
     proposal_id: str,
     payload: ConfirmActionRequest,
+    background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     system: SolarSystem = Depends(require_my_completed_system),
     service: ActionService = Depends(get_action_service),
+    relay: OutboxRelay = Depends(get_outbox_relay),
+    scope: DbScope = Depends(get_db_scope),
 ) -> ActionResponse:
-    return await service.confirm(system, current_user.id, proposal_id, payload.confirmed)
+    response = await service.confirm(system, current_user.id, proposal_id, payload.confirmed)
+    if settings.DEVICE_COMMAND_OUTBOX_ENABLED and response.status == "queued" and response.command_id:
+        # The command is already a durable row. Deliver it as soon as the response is out; the relay process is the
+        # safety net if this does not run.
+        background.add_task(dispatch_now, relay, scope, response.command_id)
+    return response
 
 
 @router.post("/{proposal_id}/reject", response_model=ActionResponse, summary="Reject a proposed device action")

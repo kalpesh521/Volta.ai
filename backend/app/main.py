@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.agents_platform.api.admin import router as supervisor_admin_router
+from app.agents_platform.api.automations import router as automations_router
+from app.agents_platform.api.memory import router as memory_router
 from app.agents_platform.api.router import router as supervisor_router
 from app.ai.checkpointer import checkpointer_provider
 from app.ai.config import ai_settings
@@ -23,6 +25,7 @@ from app.core.logging_config import configure_logging
 from app.core.metrics import metrics_endpoint
 from app.core.rate_limit import limiter
 from app.core.request_context import REQUEST_ID_HEADER, RequestContextMiddleware
+from app.core.startup_guards import enforce_worker_topology
 from app.core.telemetry import configure_telemetry, shutdown_telemetry
 from app.agents_platform.agents.device_action.router import router as action_router
 from app.modules.assistant.ops.router import router as home_ops_router
@@ -50,6 +53,7 @@ def _is_production() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
+    enforce_worker_topology(settings, ai_settings)  # several workers + per-process state: warn, or refuse in production
 
     if _is_production():
         if ai_settings.AI_CHECKPOINT_BACKEND != "postgres":
@@ -176,6 +180,8 @@ app.include_router(notification_ws_router)  # /ws/notifications
 app.include_router(assistant_router)    # /assistant/*  read-only AI assistant
 app.include_router(action_router)       # /assistant/actions/*  confirm before any command
 app.include_router(supervisor_router)   # /v2/assistant/*  supervisor + specialist agents, conversation memory
+app.include_router(automations_router)  # /v2/assistant/automations  propose, approve, pause rules
+app.include_router(memory_router)       # /v2/assistant/memory  what Suryaa remembers (list, add, edit, delete, export)
 app.include_router(supervisor_admin_router)  # /v2/assistant/admin/*  kill switches and platform status (admins)
 app.include_router(home_ops_router)     # recommendations, alerts, automation rules
 app.include_router(knowledge_router)    # /knowledge/*  admin and user documents

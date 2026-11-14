@@ -30,8 +30,12 @@ logger = logging.getLogger("volta.knowledge.repository")
 
 
 class KnowledgeRepository:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self, db: AsyncSession, *, hnsw_ef_search: int = 100, hnsw_iterative_scan: str = "relaxed_order"
+    ) -> None:
         self.db = db
+        self._hnsw_ef_search = hnsw_ef_search
+        self._hnsw_iterative_scan = hnsw_iterative_scan
 
     async def add(self, document: KnowledgeDocument) -> KnowledgeDocument:
         self.db.add(document)
@@ -199,6 +203,7 @@ class KnowledgeRepository:
                 )
             )
 
+        await self._tune_hnsw()
         found: dict[str, Candidate] = {}
         for sql, bound in searches:
             statement = text(sql)
@@ -216,6 +221,22 @@ class KnowledgeRepository:
                 found.setdefault(str(row["chunk_id"]), _candidate_from_row(row))
         return list(found.values())
 
+    async def _tune_hnsw(self) -> None:
+        """
+        Per-transaction HNSW settings. `iterative_scan` makes a filtered nearest-neighbour search keep looking until
+        it has enough rows, instead of returning the few neighbours that happened to pass the visibility filter.
+        Each setting has its own savepoint: a pgvector too old to know one must not fail the search or the others.
+        """
+        settings_to_apply = [("hnsw.ef_search", str(self._hnsw_ef_search))]
+        if self._hnsw_iterative_scan != "off":
+            settings_to_apply.append(("hnsw.iterative_scan", self._hnsw_iterative_scan))
+        for name, value in settings_to_apply:
+            try:
+                async with self.db.begin_nested():
+                    await self.db.execute(text("SELECT set_config(:name, :value, true)"), {"name": name, "value": value})
+            except SQLAlchemyError:
+                logger.info("pgvector does not support %s; continuing without it", name)
+
     async def candidates(
         self,
         *,
@@ -229,6 +250,7 @@ class KnowledgeRepository:
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
             .where(
                 KnowledgeDocument.status == ReviewStatus.PUBLISHED.value,
+                KnowledgeChunk.quarantined.is_(False),  # instruction-like text is stored for review, never retrieved
                 KnowledgeDocument.embedding_model == embedding_model,
                 or_(
                     KnowledgeDocument.scope == Scope.SHARED.value,

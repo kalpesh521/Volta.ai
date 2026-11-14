@@ -1,8 +1,8 @@
-"""Audit row for a proposed device action. The LangGraph checkpoint holds the pause."""
+"""Audit rows for proposed device actions and the overrides they create. The LangGraph checkpoint holds the pause."""
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -71,37 +71,34 @@ class DeviceOverride(Base):
     )
 
 
-class HomeNotification(Base):
-    __tablename__ = "home_notifications"
+class DeviceCommandOutbox(Base):
+    """
+    A device command accepted for delivery (transactional outbox, tracker 4.3 and 4.5).
+
+    Confirming an action writes this row in the same database transaction as the proposal's new status and its audit
+    event, so "queued" always means a durable record exists, and a command can never reach the broker for a request that
+    then rolled back. A relay publishes pending rows after the commit. `command_id` is unique, so the same command is
+    never recorded twice, and it is the message id the consumer de-duplicates on.
+
+    status: pending -> sent | blocked (kill switch) | expired (too old to be safe) | dead (retries used up)
+    """
+
+    __tablename__ = "device_command_outbox"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
+    command_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     household_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    kind: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
-    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
-    title: Mapped[str] = mapped_column(String(160), nullable=False)
-    body: Mapped[str] = mapped_column(String(500), nullable=False)
-    ref_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    email_status: Mapped[str] = mapped_column(String(16), nullable=False, default="skipped")
-    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=_utcnow, nullable=False
+    )
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=_utcnow, nullable=False
     )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-
-class AutomationRule(Base):
-    __tablename__ = "automation_rules"
-
-    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
-    household_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(80), nullable=False)
-    device: Mapped[str] = mapped_column(String(64), nullable=False)
-    command: Mapped[str] = mapped_column(String(16), nullable=False)
-    surplus_kw_min: Mapped[float | None] = mapped_column(Float, nullable=True)
-    soc_percent_min: Mapped[float | None] = mapped_column(Float, nullable=True)
-    mode: Mapped[str] = mapped_column(String(40), nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), default=_utcnow, nullable=False
-    )
+    __table_args__ = (Index("ix_device_command_outbox_due", "status", "next_attempt_at"),)

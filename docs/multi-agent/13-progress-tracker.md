@@ -1,11 +1,11 @@
 # 13 — Progress Tracker
 
 Single place to see what is done, what is in progress and what is next. Update it at the end of each piece of work.
-Plan and rationale: [11-roadmap-suggestions.md](./11-roadmap-suggestions.md). Phase 0 details: [12-phase0-implementation.md](./12-phase0-implementation.md). Phase 1 details: [14-phase1-implementation.md](./14-phase1-implementation.md). Phase 2 details and the Phase 1 wrap-up: [15-phase2-implementation.md](./15-phase2-implementation.md).
+Plan and rationale: [11-roadmap-suggestions.md](./11-roadmap-suggestions.md). Phase 0 details: [12-phase0-implementation.md](./12-phase0-implementation.md). Phase 1 details: [14-phase1-implementation.md](./14-phase1-implementation.md). Phase 2 details and the Phase 1 wrap-up: [15-phase2-implementation.md](./15-phase2-implementation.md). Phase 3 and 4 work done so far: [16-phase3-implementation.md](./16-phase3-implementation.md) (judge and prompt v6) and [18-phase3-4-build-notes.md](./18-phase3-4-build-notes.md) (everything else). Phase 5 operations (`17-phase5-operations.md`) was **never written**: the agent was stopped first (see 1b).
 
 Legend: ✅ done · 🟡 partly done · ⬜ not started
 
-_Last updated: 2026-11-12_
+_Last updated: 2026-11-14 (end of the build session; real-model evals deliberately still pending)_
 
 ## 1. Overview
 
@@ -14,14 +14,44 @@ _Last updated: 2026-11-12_
 | 0 | Production hardening | ✅ Done | 9 / 9 items |
 | 1 | Supervisor + first specialist agents | ✅ Done (real-model answer quality still to be judged, see 3) | 6 / 6 |
 | 2 | Guardrails and platform in Python | ✅ Done | 5 / 5 |
-| 3 | Carry-over gate (judge, v2 switch, ingest safety, retrieval, multilingual) + planning agents (forecast, optimizer, bill & tariff) | ⬜ Not started | 0 / 14 |
-| 4 | Automation and ambient agents | ⬜ Not started | 0 / 6 |
-| 5 | Scale and operate | ⬜ Not started | 0 / 8 |
+| 3 | Carry-over gate (judge, v2 switch, ingest safety, retrieval, multilingual) + planning agents (forecast, optimizer, bill & tariff) | 🟡 Built except 3.7 and 3.10; four items are partly done and waiting on you or on wiring (3.4, 3.5, 3.6, 3.9) | 8 done, 4 partly, 2 not started (of 14) |
+| 4 | Automation and ambient agents | 🟡 Rule engine, storage, API, worker, outbox and the Monitor are done. The Automation Rule agent, Recommender and Reporter are not | 3 done (4.1, 4.3, 4.5), 2 partly (4.4, 4.6), 1 not started (4.2) |
+| 5 | Scale and operate | 🟡 An infrastructure agent was stopped part-way: 5.1, 5.2, 5.3, 5.5 are partly written and unverified (see 1b). 5.4 and 5.6 not started | 0 verified; 5.1, 5.2, 5.3, 5.5 partly written and unverified; 5.4, 5.6 not started; 2 conditional |
 
 Stack decision (2026-11-09): everything in **Python / FastAPI / LangGraph**. Go is a future option only, triggered by measurements
 ([11 §3](./11-roadmap-suggestions.md)).
 
-Test status: **763 tests pass** with Postgres and Redis available. **740 pass and 23 skip** without them. Static check (unused or undefined names): clean for everything written in Phases 1 and 2 (a few unused imports remain in five older files). Trajectory evals: **62 / 62 cases** (76 turns). Migrations: single head, applied to a clean database, the newest one downgrades and re-applies.
+Test status: **not re-measured at the end of this session.** The full suite was started and then stopped by request, so there is no single pass count for the final tree. The last complete run (826 pass, 11 skip, with Redis, Postgres tests not run) was early in the session, before most of the work below. Per-file counts were measured when each file was finished and are listed in [18 §8](./18-phase3-4-build-notes.md) (1,070 tests across 20 new files by the sum of those counts; each file passed when it was finished, the memory store's 111 as reported by the agent that wrote them). The Postgres-only tests were run once against a scratch database (retrieval 12, outbox 2) and passed. **First thing to do on resume: run `cd backend && TEST_REDIS_URL=redis://localhost:6379/15 ./venv/bin/python -m pytest -q`.** Trajectory evals were 80 / 80 cases earlier in the session. Migrations 0001 to 0004: single head, applied to a clean Postgres, newest one downgrades and re-applies.
+
+## 1b. Session handoff (read this first when you resume)
+
+**State at the end of the 2026-11-14 build session.** Nothing is committed. Everything is in the working tree. Commit before you start anything new: once, in this project, the uncommitted tree vanished between sessions.
+
+**What exists and was verified.** Phase 3 agents (Forecast, Optimizer, Bill & Tariff) with their engines, plan-tier rules, retry, planning-intent routing, "explain and do", multilingual guard, ingest-side document safety, BM25/RRF retrieval, the L3 judge harness, prompt v6 (registered, not default), the transactional device-command outbox, stored automation rules with approval, and the automation worker. Migrations 0001 to 0004 (`202611140001` to `202611140004`) apply, downgrade and re-apply on real Postgres; single head. Details and numbers per item are in sections 5 and 6.
+
+**The Phase 5 infrastructure agent was stopped part-way by request, so that work is incomplete and unverified.** It had started: `app/core/startup_guards.py`, `app/serve.py`, `app/workers/ingest_batch.py`, `ingest_metrics.py`, `queue_lag.py`, `timescale_batch.py`; edits to `app/workers/ingest.py` (about 160 lines changed), `app/main.py` (6 lines), `docker-compose.yml` (a gateway profile), `deploy/gateway/*.yml` (Traefik config), the simulator's `tracing.py`, `clients/*.py`, `config.py`, `main.py`; and tests `test_ingest_batch.py`, `test_ingest_batch_timescale.py`, `test_ingest_rabbitmq.py`, `test_shared_state_across_processes.py`, `test_worker_topology.py`, `simulator/tests/test_tracing.py`. It was killed while making the last one-line edit to `main.py`. **It never wrote `17-phase5-operations.md`, never reported, and its tests were never run as a set.** The app still imports. Decide on resume: review `git diff` of those files and the new files, run their tests, then keep, finish or revert them. Do not assume any of 5.1, 5.2, 5.3 or 5.5 works.
+
+**Next steps, in this order.**
+
+1. Run the full suite (see the test line above), then decide what to do with the stopped Phase 5 agent's partial work (see above).
+2. **Wire long-term memory (3.4) into the supervisor.** The store, API and page exist; see section 5, item 3.4, for the exact six wiring steps.
+3. **Automation Rule agent (4.2).** Natural language to the rule DSL, using `metric_catalog()`, `TEMPLATES` and `RuleValidationError.to_dicts()` for the repair loop, then `AutomationService.propose` (stored pending, never active). Add its agent name, intent, entitlement and trajectory cases.
+4. **Recommender and Reporter (4.4)**, then the checkpoint-volume measurement (4.6).
+5. **3.7**: decide whether to store answers for a history endpoint (Y10), add the endpoint and partial results, switch the dashboard page to v2. **Retiring v1 waits for the real-model evals.**
+6. **5.4 and 5.6** (judge sampling hooks, nightly red-team generator, plan endpoint, per-tenant monthly budget, reservation-based budgeting).
+7. Docs: write `18-phase3-4-build-notes.md` fully (the file is referenced above; at the time of writing only this tracker holds the detail).
+8. Only then: **real-model evals** (3.5, 3.6, the grey-zone classifier, prompt v5). Ask the user for permission first, use the capped harness, small model, few calls.
+
+**Things that will surprise you.**
+
+* Real-model evals are **pending on purpose**. Nothing in this session called a real model. Every test uses a fake one.
+* `tests/conftest.py` now switches the outbox **off** for every test by default (older tests assert on the publisher directly); `test_device_outbox.py` switches it on for itself. In production the outbox is on (`DEVICE_COMMAND_OUTBOX_ENABLED=true`).
+* Planning intents (`forecast`, `optimize`, `bill_estimate`) are a **separate enum** used only by v2, detected by rules beside the legacy classification, so v1 behaviour and its eval set are untouched.
+* `AI_PLUS_ONLY_AGENTS` defaults to `optimizer`; the what-if simulator is Plus-only (`AI_PLUS_ONLY_WHAT_IF`). Which users are Plus is still your decision (Y7).
+* The shipped tariff tables are **illustrative and marked unverified**; every bill and plan carries that flag and the answer prompt must say so. Replace them with official tariff orders (Y11) before showing rupee figures as official.
+* Open-Meteo weather for the Forecast agent is **off by default** (`AI_FORECAST_WEATHER_ENABLED=false`); the forecast then uses persistence of the latest observed cloud cover and says so.
+* Several background agents shared one scratchpad directory and one ran another's mutation script against live code. Everything was re-verified afterwards, but give each agent its own scratch directory.
+* The Bash tool refused a large script containing `rm -rf`. Use the file tools for edits.
 
 ### Your actions (not agent work)
 
@@ -36,6 +66,13 @@ Things only you can do. Everything else in this file is planned for an agent in 
 | Y5 | In every real deployment set `AI_PLATFORM_STORE=redis`, `AI_PII_VAULT_BACKEND=redis` and a vault key (`AI_PII_VAULT_KEY`) | First production deploy and any second API replica |
 | Y6 | Approve a real-model spend for the L3 judge (item 3.5) and the prompt measurements (3.6). The current allowance is 2–3 calls and is already used | Items 3.5, 3.6 |
 | Y7 | Decide the product rules for plan tiers: which users are `plus`, and what `free` may not do | Item 5.6 |
+| Y8 | Review the 12 calibration labels in `evals/judge/calibration.jsonl` (written by the code's author, not a human reviewer) and label more answers, up to 100 | Item 3.5: no judge score may decide anything before this |
+| Y9 | Choose a judge model stronger than the answer model and set `AI_JUDGE_LLM_PROVIDER`, `AI_JUDGE_LLM_MODEL` and its key | Item 3.5 |
+| Y10 | Decide whether the assistant may **store answers** (masked, with retention) so a conversation history screen can exist. Today memory keeps questions only | Item 3.7 |
+| Y11 | Replace the illustrative tariff tables in `agents/bill_tariff/tariffs/` with official tariff orders for your DISCOMs, mark them `verified: true` | Showing rupee figures as official |
+| Y12 | Decide the real-model evaluation budget (calls, model, judge model) when development is finished. You said: ask first, small model, few tokens | Item 3.5, 3.6 |
+| Y13 | Apply migrations `202611140001` to `202611140004` to your dev and production databases (compose's `migrate` job does it) | Running the new code |
+| Y14 | Start the two new processes where you deploy: `outbox-relay` and `automation-worker` (both are in `docker-compose.yml`; run exactly one `automation-worker`) | Device commands in production; automation rules running |
 
 ---
 
@@ -154,65 +191,59 @@ Done 2026-11-12. Design: [04](./04-guardrails-gates-masking.md). Details: [15](.
 | ⬜ Policy is Python data, not OPA | Agent | 5.8, only if its trigger fires |
 | ⬜ With the memory store a flag change, cool-down or lock reaches one process only | You + Agent | Y5, and 5.2 (several workers per pod) |
 
-## 5. Phase 3 — Carry-over gate, then planning agents ⬜
+## 5. Phase 3 — Carry-over gate, then planning agents 🟡
 
-Target: 4–6 weeks for the agents, plus the gate below. Design: [02 §5](./02-agent-catalog.md).
-
-**Rule for this phase: items 3.5 to 3.7 come first.** The planning agents are the first ones whose answers cannot be checked by
-reading one number against one tool, so the judge must exist before they do. Each new agent also adds its own trajectory cases and
-guard cases to the datasets (3.10) and registers its tools in `guardrails/policy.py` (the planner/policy test fails otherwise).
+Design: [02 §5](./02-agent-catalog.md). Test counts below are the files' own counts, measured when each item was finished.
 
 ### Carry-over gate (from Phases 0–2)
 
-| # | Item | Closes | Status |
-|---|---|---|---|
-| 3.5 | **L3 judge** (doc 05): LLM-as-judge on a labelled question set, with a cost cap like the parity harness. Use it to measure answer quality on a real model, prompt v5 and the grey-zone classifier | Phase 1 "real-model parity"; Phase 2 "classifier and v5 not measured". Needs Y6 | ⬜ |
-| 3.6 | **Answer prompt v6**: the first field must answer the question (seen in the real-model run). Registered beside v4 and v5, measured with 3.5, then the default changes | Phase 2 "first field sometimes does not answer" | ⬜ |
-| 3.7 | **Switch the frontend to v2 and retire v1**: chat screen on `/v2/assistant`, add the conversation history endpoint and partial results on the whole-request deadline, then remove `/assistant` v1, its graph and its eval set | Phase 2 "v1 has no guard, masking or budget"; Phase 1 history/partial results and "v1 grounding has no retry". After 3.5 | ⬜ |
-| 3.8 | **Ingest-side safety for documents**: mask personal data in chunks, store a risk score per chunk, quarantine instruction-like text from shared scope, add the untrusted-document wrapper | Phase 2 "documents not masked or scanned at ingest" | ⬜ |
-| 3.9 | **Retrieval upgrade**: vector column width, `hnsw.iterative_scan`, true BM25/RRF fusion, re-embed with the chosen model | Phase 0 retrieval follow-up. Needs Y2 | ⬜ |
-| 3.10 | **Grow the datasets**: 6 → 80 compound cases from masked production questions and paraphrases; each new agent adds cases and guard cases | Phase 1 dataset follow-up | ⬜ |
-| 3.11 | **Mixed "explain and do"**: explain first, then offer the action as a follow-up proposal (planner change plus eval cases) | Phase 1 limit | ⬜ |
-| 3.12 | **Multilingual input**: Hinglish and Hindi guard patterns, follow-up detection and router history, leetspeak, NER for names and addresses | Phase 1 follow-up detection and router history; Phase 2 English-only guard and NER | ⬜ |
-| 3.14 | **`RetryPolicy` on agent nodes**, for agents that call slower dependencies (forecast models, solvers) | Phase 1 limit | ⬜ |
+| # | Item | Status |
+|---|---|---|
+| 3.5 | **L3 judge** (doc 05): `agents_platform/evals/judge/`. 15 frozen cases, 6-criterion rubric, deterministic checks, scoring, pairwise A/B with position swap, calibration (Cohen's kappa), baseline gate, hard call cap. 72 tests, 17 mutation checks. **Never run on a real model. Calibration is 12 author-labelled answers of 100** ([16](./16-phase3-implementation.md)). Needs Y6, Y8, Y9, Y12 | 🟡 Built, evals pending |
+| 3.6 | **Answer prompt v6** (the first field answers the question). Registered beside v4 and v5, pinned as v5 plus one rule. v4 stays the default until `judge ab` shows v6 wins | 🟡 Built, evals pending |
+| 3.7 | **Switch the dashboard to v2, history endpoint, partial results on the deadline, then retire v1.** The frontend here is static HTML, not React. Needs Y10 first (history means storing answers). **Retiring v1 waits for 3.5.** Not started | ⬜ |
+| 3.8 | ✅ **Ingest-side safety for documents.** Chunks are masked before embedding and storage (`[hidden phone number]`; consumer and meter numbers kept), scored with the injection patterns, quarantined at or above the block score (stored for review, never retrieved), a document of only instructions is refused, and v5/v6 wrap excerpts in `<untrusted_document>` with angle brackets neutralised. Migration `202611140001`. 20 tests + 1 on real Postgres | ✅ |
+| 3.9 | **Retrieval upgrade.** ✅ Real BM25 + Reciprocal Rank Fusion replace the weighted overlap; ✅ `hnsw.iterative_scan` and `ef_search` applied per transaction (skipped quietly on pgvector older than 0.8); ✅ `reembed --resize-vector` resizes the pgvector column. 23 unit tests, 5 on real Postgres. **Still open: choose a real embedding model and run it (Y2); retrieval quality is unmeasured** | 🟡 |
+| 3.10 | **Grow the datasets** (6 to 80 compound cases; richer judge snapshots). Trajectory cases grew from 62 to 80 with the new agents, but compound cases are still few. Evals pending by decision | ⬜ |
+| 3.11 | ✅ **"Explain and do".** A question plus a command is split: the question is answered, the command is *offered* ("send it on its own and I will ask you to confirm"). Device Action stays exclusive; nothing is proposed or sent. The head must be a question (an assertion before a command stays a device request); a pronoun command ("turn it on") is not split. 21 tests, 6 trajectory cases | ✅ |
+| 3.12 | ✅ **Multilingual and obfuscation.** Hinglish, Hindi and Marathi injection patterns, leetspeak folded in a scoring view (units and codes untouched), Hindi follow-up openers, the router model gets the last two earlier questions, and cue-based masking of names and addresses. Rule-based, not a model: see limits in 18. 69 new tests | ✅ (rule-based) |
+| 3.14 | ✅ **Retry for slow agents.** Bounded retry for `TransientAgentError` inside the agent's single deadline; Device Action is never retried. LangGraph's own `RetryPolicy` does not fit (the node swallows exceptions) | ✅ |
 
 ### Planning agents
 
 | # | Item | Status |
 |---|---|---|
-| 3.1 | **Forecast** agent (ML models, physics fallback from the simulator engines) | ⬜ |
-| 3.2 | **Optimizer** agent (schedule solver and battery strategy) | ⬜ |
-| 3.3 | **Bill & Tariff** agent with versioned tariff tables and the what-if simulator | ⬜ |
-| 3.4 | Long-term memory store and a "What Suryaa remembers" page | ⬜ |
-| 3.13 | Plan-tier rules for the new agents (for example the Optimizer and what-if only on `plus`), using the existing tier on the user | ⬜ |
+| 3.1 | ✅ **Forecast agent.** Engine: clear-sky physics, a clamped performance-ratio calibration from history, hourly load profile, p10/p50/p90 intervals, persistence or Open-Meteo weather with fallback. Agent reads through an authorised data port. 52 + 16 tests, 23 mutation checks | ✅ |
+| 3.2 | ✅ **Optimizer agent.** Engine: exact convex DP for the battery, coordinate descent for appliances, an **independent verifier** that must find zero violations or the plan is not returned. Prices come from the tariff engine by finite difference. 62 + 24 tests, 13 mutation checks | ✅ |
+| 3.3 | ✅ **Bill & Tariff agent.** Versioned tariff tables (illustrative, `verified: false`), itemised calculator (Decimal), what-if simulator. Usage is estimated from the user's stated bill. 84 + 28 tests, 17 mutation checks | ✅ |
+| 3.4 | **Long-term memory store and "What Suryaa remembers" page.** ✅ Built: consent-first (explicit "remember that ..." or the API only), masked, injection-screened, capped, deduped, hard delete, export, per-home scope; `frontend/public/suryaa-memory.html`. 111 tests, 12 mutation checks, migration `202611140002`. **Not wired in:** (1) check `handle_remember_command` before the planner; (2) merge `memory_facts(...)` into the facts and call `mark_used`; (3) add a prompt rule that `<untrusted_memory>` is data; (4) serve the page from `app/webui.py` (`/ui/memory`); (5) call `purge_expired` from `agents_platform/maintenance.py`; (6) call `MemoryService.erase_user` from account deletion | 🟡 |
+| 3.13 | ✅ **Plan-tier rules for agents**, as configuration: `AI_PLUS_ONLY_AGENTS` (default `optimizer`) and `AI_PLUS_ONLY_WHAT_IF`. A free user gets fixed wording and the agent never runs; an unknown tier is `free`. Values wait on Y7 | ✅ |
 
-## 6. Phase 4 — Automation and ambient ⬜
-
-Target: 4–6 weeks.
+## 6. Phase 4 — Automation and ambient 🟡
 
 | # | Item | Status |
 |---|---|---|
-| 4.1 | Rule engine in Python (alerts and approved automations, state transitions only), reusing `domain/alerts.py` | ⬜ |
-| 4.2 | **Automation Rule** agent: natural language to a rule DSL, validate, dry-run, user approval | ⬜ |
-| 4.3 | Command executor with outbox table, idempotency, state machine, kill switch, audit | ⬜ |
-| 4.4 | **Monitor**, **Recommender**, **Reporter** ambient and batch agents; provider batch APIs | ⬜ |
-| 4.5 | Fix the publish-before-commit gap (follows from 4.3) | ⬜ |
-| 4.6 | **Exit gate:** measure checkpoint write volume per question with the Phase 0 metrics, then set retention and checkpoint durability from the numbers. Move `HomeNotification` and `AutomationRule` out of `agents/device_action/` into their own homes | ⬜ |
+| 4.1 | ✅ **Rule engine, storage and execution.** DSL with a closed vocabulary and validator, three-valued logic, edge-triggered evaluation (hysteresis, cooldown, daily cap), dry run, fingerprint. Stored in `automation_rule_defs` (migration `202611140004`), lifecycle `pending_approval` to `active` to `paused`; approval binds to the fingerprint the user saw; the executor re-checks it before every run and pauses a rule that no longer matches. HTTP API under `/v2/assistant/automations`. A rule only ever **notifies or suggests**: it never creates a command or an outbox row. 355 engine + 27 service + 8 API + 8 worker tests | ✅ |
+| 4.2 | **Automation Rule agent**: natural language to a rule, validate with repair, dry-run, user approval. The service, validator messages and API are ready; the agent, its intent, entitlement and trajectory cases are not written | ⬜ |
+| 4.3 | ✅ **Command executor with an outbox.** `device_command_outbox` (unique `command_id` as the idempotency key), `OutboxRelay` (retries with growing pause, dead after N attempts, kill switch checked at delivery, stale commands dropped, corrupt rows marked dead), a written proposal state machine, an idempotent consumer, `outbox-relay` process. Proven on real Postgres that two relays never take the same row. 23 tests + 2 on Postgres. Migration `202611140003` | ✅ |
+| 4.4 | **Monitor, Recommender, Reporter.** ✅ Monitor = the automation worker (`app/workers/automation.py`): its own short-lived queue, bounded, one replica per home set. ⬜ Recommender and ⬜ Reporter (and provider batch APIs) not written | 🟡 |
+| 4.5 | ✅ **Publish-before-commit gap closed.** A confirmed command is a row written in the request's own transaction; the broker is called after the commit. Tested: a rolled-back request leaves no row and nothing on the wire; a broker outage no longer fails the user's confirmation | ✅ |
+| 4.6 | **Exit gate.** ✅ `HomeNotification` and the legacy `AutomationRule` moved out of the Device Action package (tables unchanged, no migration). ⬜ Measure checkpoint write volume per question with the Phase 0 metrics, then set retention and durability from the numbers | 🟡 |
 
-## 7. Phase 5 — Scale and operate ⬜
+Known gaps in Phase 4: the device worker accepts only on, off and schedule, so a DSL `set_level` has no executor and `HomeNotification` has no push channel (a `push` notification is delivered in-app only); the automation worker must be a single replica; `domain/alerts.py` thresholds are copied into the DSL with a parity test instead of shared constants.
 
-Ongoing.
+## 7. Phase 5 — Scale and operate 🟡
 
 | # | Item | Status |
 |---|---|---|
-| 5.1 | Horizontal ingest workers with queue-lag autoscaling; batched Timescale writes | ⬜ |
-| 5.2 | Several uvicorn workers per pod; scale agent pods on in-flight requests. Confirms the Redis-backed budgets, cool-downs, flags and locks hold across workers | ⬜ |
-| 5.3 | Off-the-shelf gateway (Envoy, Kong or Traefik) for TLS, routing and coarse limits | ⬜ |
+| 5.1 | Horizontal ingest workers with batched Timescale writes | 🟡 **Partly written, unverified.** The agent was stopped part-way; batching modules and tests exist, never run as a set |
+| 5.2 | Several uvicorn workers per pod; startup guard against the memory store with more than one worker | 🟡 Partly written, unverified (agent stopped) |
+| 5.3 | Off-the-shelf gateway (opt-in compose profile) | 🟡 Partly written, unverified (agent stopped) |
 | 5.4 | Online judge sampling, canary pipeline, cost dashboards, nightly red-team generator | ⬜ |
-| 5.5 | Simulator sends `traceparent` so traces start at the source | ⬜ |
-| 5.6 | **Plans and cost control:** an endpoint to change a user's plan tier, a per-tenant monthly budget, and reservation-based budgeting so a burst cannot overshoot. Needs Y7 | ⬜ |
-| 5.7 | Revisit token streaming, only if a plain-text answer mode is added | ⬜ |
-| 5.8 | Adopt OPA for policy, **only if** rules must change without a deploy. Not scheduled otherwise | ⬜ |
+| 5.5 | Simulator sends `traceparent` | 🟡 Partly written, unverified (agent stopped) |
+| 5.6 | **Plans and cost control:** endpoint to change a user's tier, per-tenant monthly budget, reservation-based budgeting. Needs Y7 | ⬜ |
+| 5.7 | Token streaming, only if a plain-text answer mode is added | ⬜ Conditional, not scheduled |
+| 5.8 | OPA for policy, only if rules must change without a deploy | ⬜ Conditional, not scheduled |
 
 ---
 
@@ -232,6 +263,9 @@ Nothing recorded as a limit, shortcut or open question in documents 12, 14 and 1
 | Vector width 256, no `hnsw.iterative_scan`, no BM25/RRF | 12 | 3.9 |
 | v2 answer quality not measured on a real model; classifier and prompt v5 unmeasured | 14, 15 | 3.5 (Y6) |
 | First field of a model answer sometimes does not answer | 15 | 3.6 |
+| Judge never run on a real model; calibration is 12 author-labelled answers (target 100 human-labelled); judge runs at the global temperature | 16 | 3.5 (Y6, Y8, Y9) |
+| No CI step for the judge (needs a key and costs money) | 16 | 5.4 |
+| Conversation history endpoint needs a decision on storing answers first | 14, 16 | 3.7 |
 | v1 has no guard, masking, budget or kill switch; v1 grounding has no retry; frontend still on v1 | 14, 15 | 3.7 |
 | No conversation history endpoint; no partial results on the whole-request deadline | 14 | 3.7 |
 | Documents not masked or scanned at ingest | 15 | 3.8 |
@@ -244,6 +278,14 @@ Nothing recorded as a limit, shortcut or open question in documents 12, 14 and 1
 | Plan tier changed only by SQL; budgets per user only; burst can overshoot | 15 | 5.6 (Y7) |
 | Policy is Python data, not OPA | 15 | 5.8 (conditional) |
 | Answer text not streamed token by token | 14 | 5.7 (conditional) |
+| Memory store built but not wired into the supervisor, the sweep or account deletion | 18 | 3.4 |
+| DSL `set_level` has no executor; `push` notification channel not delivered; automation worker is single replica | 18 | 4.2, 4.4, 5.2 |
+| Automation Rule agent, Recommender, Reporter not built | 18 | 4.2, 4.4 |
+| Checkpoint write volume not measured | 14 | 4.6 |
+| Name and address masking is cue-based, not a model; Hinglish replies and cases are few | 18 | 3.10, 3.12 follow-up when production questions exist |
+| Shipped tariff tables are illustrative | 18 | Y11 |
+| Forecast intervals are nominal and not validated against actuals; optimizer treats the forecast as certain | 18 | 3.5 (needs real data) |
+| Phase 5 infrastructure items are partly written by an agent that was stopped; nothing verified, no doc written | 1b | 5.1, 5.2, 5.3, 5.5 (review, test, then keep, finish or revert) |
 | Go components (edge, guard, executor) | 06 | Not scheduled: only if measurements demand it ([11 §3](./11-roadmap-suggestions.md)) |
 
 ## 9. Decision log
@@ -272,6 +314,20 @@ Nothing recorded as a limit, shortcut or open question in documents 12, 14 and 1
 | 2026-11-12 | The parity harness enforces its call cap in code and prices each request before sending it | The model is the user's money. A cap you promise is not a cap |
 | 2026-11-12 | A different stated number between v1 and v2 is informational in the parity run | Both passed the grounding gate; it is a different verified fact chosen, not an error |
 | 2026-11-12 | Phase 3 starts with a carry-over gate (judge, prompt v6, v2 switch) before any new agent | The planning agents' answers cannot be verified by reading one number against one tool. Measure first, then build. Every known limit now has an item number (section 8) |
+| 2026-11-14 | The judge's eval data is frozen snapshots captured from the real pipeline, not hand-written fixtures | Hand-written facts drift from what production sends the model. A snapshot is exactly what the prompt shows |
+| 2026-11-14 | A judge criterion is never reported `trusted` below 100 labelled answers, whatever its kappa | A kappa from a dozen answers cannot approve a rubric (doc 05 asks for 100) |
+| 2026-11-14 | Prompt changes are decided by position-swapped pairwise comparison; a version wins only if it wins both orders | Judges favour the first position; disagreement between orders is bias, so it counts as a tie |
+| 2026-11-14 | Planning intents are a separate v2-only enum, detected by rules beside the legacy classification | Adding members to the shared `Intent` would have changed v1 and its eval set. A miss falls back to the legacy answer, which is correct for everything not clearly a planning question |
+| 2026-11-14 | "Explain and do" offers the command instead of running both | Device Action must stay exclusive and every command must go through confirm-before-act on live data. An assertion before a command is never split (the constraint-bypass attack) |
+| 2026-11-14 | Plan-tier rules are configuration, validated at startup against the closed agent set | The product rules (Y7) will change; a typo must stop startup, not leave an expensive agent open to everyone |
+| 2026-11-14 | A confirmed device command is an outbox row in the request's transaction; the broker is called after the commit | Closes publish-before-commit. A command is on the wire only if the database recorded it, and a broker outage loses nothing. The consumer is idempotent because delivery is at least once |
+| 2026-11-14 | The kill switch is checked when the relay delivers, not only when the action is proposed | Flipping it must stop commands that are already queued |
+| 2026-11-14 | A rule can only notify or suggest; approval binds to the fingerprint the user saw | A rule must never move a device by itself, and what runs must be exactly what was approved |
+| 2026-11-14 | Ingest-side safety quarantines instruction-like chunks in every scope, not only shared | Cheap, and an attacker-supplied PDF in a user's own account is the same indirect-injection route |
+| 2026-11-14 | Tariff tables ship illustrative and flagged unverified, and the flag reaches the answer | Invented rates must never be presented as an official tariff |
+| 2026-11-14 | Forecast, optimizer and tariff are pure engines with their own tests; agents are thin adapters | The arithmetic is checkable without a model, and the answer model never needs to calculate |
+| 2026-11-14 | Real-model evaluation is the last step of development, with the user's permission and a hard call cap | The user's instruction: finish development first, then test with a small model and few tokens |
+| 2026-11-14 | Real-model eval calls are charged when sent, retries and fallback are off, and three errors in a row stop the run | A failed request can still be billed, and a wrong key must not walk through the budget |
 
 ## 10. How to update this file
 

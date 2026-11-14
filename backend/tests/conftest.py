@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.agents_platform.api.deps import get_db_scope
+from app.core.config import settings as app_settings
 from app.core.database import Base, get_db
 from app.core.deps import get_google_oauth_client
 from app.core.rate_limit import limiter
@@ -38,6 +39,16 @@ test_engine = create_async_engine(
     poolclass=StaticPool,  # keeps the same in-memory DB alive across connections
 )
 TestSessionLocal = async_sessionmaker(bind=test_engine, expire_on_commit=False)
+
+
+@pytest.fixture(autouse=True)
+def _publish_inline_unless_a_test_opts_into_the_outbox(monkeypatch):
+    """
+    Production sends a confirmed device command through the transactional outbox. Tests written before the outbox
+    assert on the publisher directly, so they keep the inline path; the outbox tests (`test_device_outbox.py`) switch
+    it on for themselves.
+    """
+    monkeypatch.setattr(app_settings, "DEVICE_COMMAND_OUTBOX_ENABLED", False)
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

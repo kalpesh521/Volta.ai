@@ -37,4 +37,10 @@ EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+# `python -m app.serve` runs WEB_CONCURRENCY uvicorn worker processes (default 1). More than one needs
+# AI_PLATFORM_STORE=redis, AI_CHECKPOINT_BACKEND=postgres and RATE_LIMIT_STORAGE_URI set: the entrypoint
+# warns about each missing piece and, with ENVIRONMENT=production, refuses to start. Plain
+# `uvicorn main:app` still works (one process) for local development.
+# Behind a reverse proxy set FORWARDED_ALLOW_IPS to the proxy's address so X-Forwarded-For is trusted.
+ENV WEB_CONCURRENCY=1
+CMD ["python", "-m", "app.serve", "--host", "0.0.0.0", "--port", "8000"]

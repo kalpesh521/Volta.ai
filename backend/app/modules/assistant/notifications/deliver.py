@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
-from app.agents_platform.agents.device_action.models import HomeNotification
+from app.modules.assistant.notifications.models import HomeNotification
 from app.modules.assistant.domain.alerts import priority_for
 from app.modules.assistant.notifications.bus import publish
 from app.modules.assistant.notifications.cache import notification_cache
@@ -32,8 +32,8 @@ async def save_notification(
 ) -> HomeNotification | None:
     if dedupe == "today" and await _created_today(db, household_id, kind):
         return None
-    if dedupe != "today" and await _open_kind(db, household_id, kind):
-        return None
+    if dedupe not in ("today", "none") and await _open_kind(db, household_id, kind):
+        return None  # "none" is for callers that already rate-limit themselves (a rule has a cooldown and a daily cap)
     priority = priority_for(kind)
     row = HomeNotification(
         user_id=user_id,

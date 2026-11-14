@@ -16,6 +16,7 @@ from app.core.metrics import ACTION_PROPOSALS
 from app.agents_platform.agents.device_action.graph import ActionRuntime
 from app.agents_platform.agents.device_action.models import ActionAuditEvent, ActionProposal, DeviceOverride
 from app.modules.assistant.notifications.deliver import save_notification
+from app.agents_platform.agents.device_action.outbox import OutboxPublisher
 from app.agents_platform.agents.device_action.publisher import CommandPublisher
 from app.agents_platform.agents.device_action.safety import explain
 from app.agents_platform.agents.device_action.schemas import ActionResponse
@@ -173,7 +174,7 @@ class ActionService:
         runtime = ActionRuntime(
             energy=self._energy,
             system=system,
-            publisher=self._publisher,
+            publisher=OutboxPublisher(self._db) if settings.DEVICE_COMMAND_OUTBOX_ENABLED else self._publisher,
             settings=settings,
             active_commands=await self._active_commands(system.household_id),
         )

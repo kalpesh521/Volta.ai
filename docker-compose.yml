@@ -157,8 +157,18 @@ services:
       # Prometheus scrape target at /metrics. It is unauthenticated: the port is bound to
       # 127.0.0.1 above, keep it that way or put it behind your own access control.
       METRICS_ENABLED: "true"
+      # uvicorn worker processes inside this container. Needs the shared stores configured above
+      # (AI_PLATFORM_STORE=redis, AI_CHECKPOINT_BACKEND=postgres, RATE_LIMIT_STORAGE_URI): the API warns
+      # when they are missing and refuses to start in production. Each worker needs roughly 300-400 MB,
+      # so raise API_MEMORY_LIMIT with it. /metrics aggregates all workers of the container.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      # Which peers may set X-Forwarded-For. Keep 127.0.0.1 when clients reach the API directly. With the
+      # `gateway` profile set it to the gateway's address or the compose subnet (see docs/multi-agent/17).
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
+    # In-flight requests get API_GRACEFUL_SHUTDOWN_SECONDS (default 20) to finish after SIGTERM.
+    stop_grace_period: 30s
     volumes:
       - knowledge_data:/srv/volta/backend/var/knowledge
     depends_on:
@@ -173,16 +183,21 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: ${API_MEMORY_LIMIT:-1g}
 
   ingest-worker:
-    # RabbitMQ -> TimescaleDB + Redis. Scale with: docker compose up -d --scale ingest-worker=3
+    # RabbitMQ -> TimescaleDB + Redis, in batches (INGEST_BATCH_SIZE / INGEST_BATCH_MAX_AGE_SECONDS).
+    # Competing consumers on one queue: scale with  docker compose up -d --scale ingest-worker=3
+    # (each replica holds up to 10 database connections: keep replicas x 10 under the TimescaleDB max_connections).
     # Each replica serves its own /metrics on :9100 inside the compose network.
     <<: *backend
     environment:
       <<: *backend-env
       WORKER_METRICS_PORT: "9100"
     command: ["python", "-m", "app.workers.ingest"]
+    # SIGTERM makes the worker stop consuming and flush its buffered batch (up to
+    # INGEST_SHUTDOWN_TIMEOUT_SECONDS, default 25). Compose's default 10 s would SIGKILL it first.
+    stop_grace_period: 30s
     healthcheck:
       disable: true
     depends_on:
@@ -209,6 +224,44 @@ services:
       resources:
         limits:
           memory: 512m
+
+  outbox-relay:
+    # Delivers confirmed device commands to the broker after the database commit (transactional outbox). The API also
+    # delivers each command right after the response; this process is the safety net and does the retries. Safe to scale:
+    # rows are claimed with FOR UPDATE SKIP LOCKED.
+    <<: *backend
+    environment:
+      <<: *backend-env
+      WORKER_METRICS_PORT: "9100"
+    command: ["python", "-m", "app.agents_platform.agents.device_action.outbox_relay"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  automation-worker:
+    # Evaluates users' approved automation rules on live telemetry (its own short-lived queue, so ingest is unaffected).
+    # Run ONE replica: rule state lives in the worker and two would both fire (see backend/app/workers/automation.py).
+    <<: *backend
+    environment:
+      <<: *backend-env
+      WORKER_METRICS_PORT: "9100"
+    command: ["python", "-m", "app.workers.automation"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 256m
 
   action-maintenance:
     # Hourly housekeeping: expire unanswered device-action proposals, prune old action checkpoints,
@@ -257,6 +310,46 @@ services:
       resources:
         limits:
           memory: 512m
+
+  # ---------------------------------------------------------------- edge (opt-in)
+  gateway:
+    # Reverse proxy in front of the API: TLS termination (self-signed placeholder), /api routing, coarse
+    # per-IP rate limit, 20 MiB request cap, security headers. OFF unless the profile is selected:
+    #   docker compose --profile gateway up -d gateway
+    #   http://127.0.0.1:8088/api/health   https://127.0.0.1:8443/api/health  (curl -k: self-signed)
+    # Published on 127.0.0.1 only. Config: deploy/gateway/*.yml. Notes and limits: docs/multi-agent/17.
+    # The API still publishes its own port above; close that to make the gateway the only way in.
+    # Set FORWARDED_ALLOW_IPS (see the api service) so the API sees real client addresses for its per-IP limits.
+    profiles: [gateway]
+    image: traefik:v3.2
+    volumes:
+      - ./deploy/gateway/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./deploy/gateway/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    ports:
+      - "127.0.0.1:${GATEWAY_HTTP_PORT:-8088}:8080"
+      - "127.0.0.1:${GATEWAY_HTTPS_PORT:-8443}:8443"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp        # request bodies over 1 MiB spill here (buffering middleware)
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [volta]
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
 networks:
   volta:

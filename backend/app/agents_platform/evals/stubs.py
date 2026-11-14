@@ -139,4 +139,7 @@ def default_stub_agents() -> dict[AgentName, StubAgent]:
         AgentName.ENERGY_INSIGHT: StubAgent(AgentName.ENERGY_INSIGHT),
         AgentName.KNOWLEDGE: StubAgent(AgentName.KNOWLEDGE),
         AgentName.DEVICE_ACTION: StubAgent(AgentName.DEVICE_ACTION, fallback_reason="device_action"),
+        AgentName.FORECAST: StubAgent(AgentName.FORECAST),
+        AgentName.OPTIMIZER: StubAgent(AgentName.OPTIMIZER),
+        AgentName.BILL_TARIFF: StubAgent(AgentName.BILL_TARIFF),
     }

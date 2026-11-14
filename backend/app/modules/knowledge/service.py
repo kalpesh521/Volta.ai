@@ -36,6 +36,7 @@ from app.modules.knowledge.extract import ALLOWED_SUFFIXES, extract_pages
 from app.modules.knowledge.models import BillExtraction, KnowledgeChunk, KnowledgeDocument, KnowledgeReview
 from app.modules.knowledge.repository import KnowledgeRepository, bill_payload
 from app.modules.knowledge.retrieval import gap_kind, infer_doc_types, rank_passages
+from app.modules.knowledge.safety import screen_chunk
 from app.modules.knowledge.schemas import BillOut, DocumentOut, ReviewOut, VersionOut
 from app.modules.knowledge.storage import DocumentStorage
 
@@ -64,6 +65,8 @@ class KnowledgeService:
         min_score: float,
         vector_candidates: int = 40,
         lexical_candidates: int = 40,
+        quarantine_score: float = 0.8,
+        rrf_k: int = 60,
     ) -> None:
         self._repo = repo
         self._embedder = embedder
@@ -75,6 +78,8 @@ class KnowledgeService:
         self._min_score = min_score
         self._vector_candidates = vector_candidates
         self._lexical_candidates = lexical_candidates
+        self._quarantine_score = quarantine_score
+        self._rrf_k = rrf_k
 
     async def upload_private(
         self,
@@ -258,6 +263,7 @@ class KnowledgeService:
             brand=brand,
             discom=discom,
             today=date.today(),
+            rrf_k=self._rrf_k,
         )
 
     async def reembed_stale(self, limit: int) -> int:
@@ -319,6 +325,12 @@ class KnowledgeService:
             raise KnowledgeRejectedError("No text could be extracted from this file.")
         if len(chunks) > _MAX_CHUNKS:
             raise KnowledgeRejectedError("This document is too long to index. Split it and upload the parts.")
+        # Screen before anything is embedded or stored: personal data is masked, instruction-like text is scored.
+        screens = [screen_chunk(chunk.text, quarantine_score=self._quarantine_score) for chunk in chunks]
+        if all(screen.quarantined for screen in screens):
+            raise KnowledgeRejectedError(
+                "This document is made of instructions aimed at AI systems, not of content, so it cannot be used."
+            )
 
         scope = scope_for(doc_type)
         digest = hashlib.sha256(data).hexdigest()
@@ -341,7 +353,7 @@ class KnowledgeService:
         version = replaces.version_number + 1 if replaces else 1
         storage_key = f"{scope.value}/{user_id}/{document_id}{suffix}"
         vectors = await self._embedder.embed_documents(
-            [embed_input(title, doc_type.value, chunk.page_start, chunk.text) for chunk in chunks]
+            [embed_input(title, doc_type.value, chunk.page_start, screen.text) for chunk, screen in zip(chunks, screens)]
         )
         self._storage.save(storage_key, data)
         try:
@@ -366,17 +378,22 @@ class KnowledgeService:
                 embedding_model=self._embedder.model_name,
                 page_count=len(pages),
                 chunk_count=len(chunks),
+                quarantined_chunk_count=sum(screen.quarantined for screen in screens),
+                masked_value_count=sum(screen.masked_values for screen in screens),
             )
             document.chunks = [
                 KnowledgeChunk(
                     chunk_index=chunk.index,
                     page_start=chunk.page_start,
                     page_end=chunk.page_end,
-                    content=chunk.text,
+                    content=screen.text,
                     content_hash=chunk.content_hash,
                     embedding_json=_dump_vector(vectors[chunk.index]),
+                    risk_score=screen.risk_score,
+                    quarantined=screen.quarantined,
+                    masked_values=screen.masked_values,
                 )
-                for chunk in chunks
+                for chunk, screen in zip(chunks, screens)
             ]
             if doc_type is DocType.ELECTRICITY_BILL:
                 fields = extract_bill_fields("\n".join(page.text for page in pages))
@@ -502,6 +519,8 @@ class KnowledgeService:
             page_count=document.page_count,
             chunk_count=document.chunk_count,
             byte_size=document.byte_size,
+            quarantined_chunk_count=document.quarantined_chunk_count,
+            masked_value_count=document.masked_value_count,
             created_at=document.created_at,
             bill=bill,
             reviews=reviews,

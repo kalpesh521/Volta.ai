@@ -26,6 +26,8 @@ Target architecture for moving Suryaa from one assistant graph to a production, 
 | 13 | [Progress tracker](./13-progress-tracker.md) | Status of every phase and item, what each delivered, open follow-ups, decision log |
 | 14 | [Phase 1 implementation](./14-phase1-implementation.md) | The supervisor, three agents, thread memory, regeneration, streaming and trajectory evals: how they work, configure and operate, known limits |
 | 15 | [Phase 2 implementation](./15-phase2-implementation.md) | Input guard, PII masking and vault, token budgets, policy checks, kill switches and the prompt and model registry; plus the Phase 1 wrap-up (the `actions/` move, conversation lock, real-model parity with a capped spend) |
+| 16 | [Phase 3 implementation](./16-phase3-implementation.md) | Carry-over gate, part 1: the L3 answer-quality judge (frozen cases, rubric, pairwise A/B, calibration, hard call cap) and answer prompt v6 |
+| 18 | [Phase 3 and 4 build notes](./18-phase3-4-build-notes.md) | Forecast, optimizer, bill and tariff, long-term memory, ingest safety, retrieval, explain-and-do, multilingual guard, the device-command outbox, automation rules and their worker: what each does, how to run it, limits |
 
 ## The five rules that run through every document
 

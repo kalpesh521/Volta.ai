@@ -49,7 +49,9 @@ graph node, and tokens are debited by the service after the graph from the same 
   change without a deploy.
 - Prompt/model registry and feature flags (kill switches per agent).
 
-### Phase 3 — Carry-over gate, then planning agents (4–6 weeks)
+### Phase 3 — Carry-over gate, then planning agents (4–6 weeks) 🟡 started (2026-11-14)
+
+Built so far: the three planning agents, plan-tier rules, ingest-side document safety, the retrieval upgrade, explain-and-do, the multilingual guard, retry, the L3 judge and prompt v6 (both waiting for a real-model run), and the long-term memory store (not yet wired in). Not started: 3.7 (history endpoint and the v2 switch) and 3.10. Status per item: [13-progress-tracker.md](./13-progress-tracker.md). Details: [16](./16-phase3-implementation.md) and [18](./18-phase3-4-build-notes.md).
 
 **Gate first** (items 3.5 to 3.14 in the [tracker](./13-progress-tracker.md)): the L3 judge and real-model quality measurement, answer
 prompt v6, switching the frontend to v2 and retiring v1, ingest-side masking and risk scoring of documents, the retrieval upgrade,
@@ -63,7 +65,9 @@ Every known limit from Phases 0–2 is traced to an item in the tracker's covera
 - **Bill & Tariff Agent** with versioned tariff tables and what-if simulator (backs the frontend "bill simulator").
 - Long-term memory (Store) + "What Suryaa remembers" page.
 
-### Phase 4 — Automation & ambient (4–6 weeks)
+### Phase 4 — Automation & ambient (4–6 weeks) 🟡 partly built (2026-11-14)
+
+Built: rule engine and DSL, stored rules with approval, the automation worker, the device-command outbox, the publish-before-commit fix. Not built: the Automation Rule agent, Recommender, Reporter, the checkpoint-volume measurement. See [13](./13-progress-tracker.md).
 
 - **Rule engine in Python** (`modules/automation/`): evaluates alerts and approved automations on each tick inside
   the ingest worker or a dedicated consumer, emits state transitions only. Reuses `domain/alerts.py`.
@@ -74,7 +78,9 @@ Every known limit from Phases 0–2 is traced to an item in the tracker's covera
 - **Monitor**, **Recommender**, **Reporter** ambient/batch agents; provider batch APIs.
 - Exit gate: measure checkpoint write volume per question and set retention and durability from it; move `HomeNotification` and `AutomationRule` out of the Device Action package.
 
-### Phase 5 — Scale and operate (ongoing)
+### Phase 5 — Scale and operate (ongoing) 🟡 in flight (2026-11-14)
+
+Infrastructure items (5.1, 5.2, 5.3, 5.5) were partly written by a background agent that was stopped; they are unverified. 5.4 and 5.6 are not started. See [13](./13-progress-tracker.md).
 
 - Scale ingest workers horizontally (`--scale ingest-worker=N`, KEDA on queue lag). Batch Timescale writes
   (`COPY`/`executemany`) and pipeline Redis calls.
